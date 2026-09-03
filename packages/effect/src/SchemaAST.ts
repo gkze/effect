@@ -2811,7 +2811,8 @@ export const Objects: new(
         properties = ast.propertySignatures.map((ps) => ({
           parser: compileConstructorDefault(ps.type),
           name: ps.name,
-          type: ps.type
+          type: ps.type,
+          usesObjectPrototype: ps.name !== "__proto__" && ps.name in Object.prototype
         }))
         indexes = indexCount
           ? ast.indexSignatures.map((is) => ({
@@ -2842,7 +2843,8 @@ export const Objects: new(
         input: record,
         out,
         issues: undefined as Arr.NonEmptyArray<SchemaIssue.Issue> | undefined,
-        options
+        options,
+        useOwnPropertyLookup: isPlainPrototype(record)
       }
       const errorsAllOption = options.errors === "all"
       const onExcessPropertyError = options.onExcessProperty === "error"
@@ -2977,12 +2979,15 @@ export const Objects: new(
       const props = compileMembers()
       const record = input as Record<PropertyKey, unknown>
       const out: Record<PropertyKey, unknown> = {}
-      const state: ObjectParserState = { ast, input: record, out, issues: undefined, options }
+      const useOwnPropertyLookup = isPlainPrototype(record)
+      const state: ObjectParserState = { ast, input: record, out, issues: undefined, options, useOwnPropertyLookup }
       try {
         for (let index = 0; index < props.length; index++) {
           const property = props[index]
           const name = property.name
-          const hasKey = hasPropertySignature(record, name)
+          const hasKey = useOwnPropertyLookup && !property.usesObjectPrototype
+            ? Object.hasOwn(record, name)
+            : hasPropertySignature(record, name)
           const value = hasKey ? record[name] : InternalParser.missing
           const exit = property.parser(value, options)
           if (!effectIsExit(exit)) {
@@ -3054,6 +3059,7 @@ type ObjectParserState = {
   readonly input: Record<PropertyKey, unknown>
   readonly options: ParseOptions
   readonly out: Record<PropertyKey, unknown>
+  readonly useOwnPropertyLookup: boolean
   issues: Array<SchemaIssue.Issue> | undefined
 }
 
@@ -3061,6 +3067,7 @@ type ParsedProperty = {
   readonly parser: SchemaParser.Parser
   readonly name: PropertyKey
   readonly type: AST
+  readonly usesObjectPrototype: boolean
 }
 
 function stepProperty(
@@ -3094,7 +3101,10 @@ function stepProperty(
 
 const parseProperties = iterateEager<ObjectParserState, ParsedProperty>()({
   onItem(s, p) {
-    if (!hasPropertySignature(s.input, p.name)) {
+    const hasKey = s.useOwnPropertyLookup && !p.usesObjectPrototype
+      ? Object.hasOwn(s.input, p.name)
+      : hasPropertySignature(s.input, p.name)
+    if (!hasKey) {
       return p.parser(InternalParser.missing, s.options)
     }
     const value = s.input[p.name]
@@ -3328,6 +3338,11 @@ const emptyCandidates: ReadonlyArray<never> = Object.freeze([])
 
 const hasPropertySignature = (input: object, key: PropertyKey): boolean =>
   key === "__proto__" ? Object.hasOwn(input, key) : key in input
+
+const isPlainPrototype = (input: object): boolean => {
+  const prototype = Object.getPrototypeOf(input)
+  return prototype === null || prototype === Object.prototype
+}
 
 function getIndex(types: ReadonlyArray<AST>): CandidateIndex {
   let index = candidateIndexCache.get(types)
