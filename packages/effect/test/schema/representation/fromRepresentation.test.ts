@@ -230,7 +230,7 @@ describe("SchemaRepresentation.fromRepresentation", () => {
 
   it("revives an empty Union as Never", () => {
     const schema = SchemaRepresentation.fromRepresentation({
-      representation: { _tag: "Union", types: [], mode: "anyOf", checks: [] },
+      representation: { _tag: "Union", types: [], options: { mode: "anyOf" }, checks: [] },
       references: {}
     }, { revivers: [] })
     assert.isFalse(Schema.is(schema)(undefined))

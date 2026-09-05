@@ -135,8 +135,7 @@ describe("SchemaRepresentation.toJsonSchemaMultiDocument", () => {
           properties: {
             child: { $ref: "#/$defs/ChildEncoded" }
           },
-          required: ["child"],
-          additionalProperties: false
+          required: ["child"]
         }
       })
     })
@@ -414,8 +413,7 @@ describe("SchemaRepresentation.toJsonSchemaMultiDocument", () => {
                 { type: "null" }
               ]
             }
-          },
-          additionalProperties: false
+          }
         },
         NodeEncoded: { $ref: "#/$defs/Objects_" }
       })
@@ -460,32 +458,28 @@ describe("SchemaRepresentation.toJsonSchemaMultiDocument", () => {
           properties: {
             next: { $ref: "#/$defs/Suspend_" }
           },
-          required: ["next"],
-          additionalProperties: false
+          required: ["next"]
         },
         NodeEncoded: {
           type: "object",
           properties: {
             next: { $ref: "#/$defs/Suspend_" }
           },
-          required: ["next"],
-          additionalProperties: false
+          required: ["next"]
         },
         Suspend_1: {
           type: "object",
           properties: {
             next: { $ref: "#/$defs/Suspend_1" }
           },
-          required: ["next"],
-          additionalProperties: false
+          required: ["next"]
         },
         NodeEncoded_1: {
           type: "object",
           properties: {
             next: { $ref: "#/$defs/Suspend_1" }
           },
-          required: ["next"],
-          additionalProperties: false
+          required: ["next"]
         }
       })
     })
@@ -541,7 +535,7 @@ describe("SchemaRepresentation.toJsonSchemaMultiDocument", () => {
           {
             _tag: "Union",
             types: [StringRepresentation, { _tag: "Boolean", checks: [] }],
-            mode: "oneOf",
+            options: { mode: "oneOf" },
             checks: []
           }
         ],

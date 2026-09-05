@@ -146,6 +146,11 @@ active `ParseOptions`; `validate` reports failure with
 optional input is absent. The registry does not verify that an installed
 decoder implements the supplied AST.
 
+Installation does not evaluate `is`, `validate`, or `decode` accessors. The
+registry resolves each operation once when a consumer first needs it, including
+absent optional operations. Getters retain the installed object as their
+receiver. Public installation and JIT installation share this behavior.
+
 This replacement is transparent to every `SchemaParser` API that resolves the
 AST. A supported type-side AST has up to three independently lazy operations:
 
@@ -159,9 +164,12 @@ AST. A supported type-side AST has up to three independently lazy operations:
 
 When `validate` is available, successful decoding stops there. When it returns
 `INVALID`, `decode` performs one detailed compiled pass. Without `validate`,
-decoding calls `decode` directly. All `ParseOptions` are supported; options that
-affect the decoded output or issue collection may select a more detailed
-generated path.
+decoding calls `decode` directly. `validate` supports every runtime parse option
+without calling the detailed decoder or discarding its issues. `INVALID` means
+invalid input, never an unsupported optimization. Custom check callbacks may
+still allocate issues. Each validator is generated once with a default options
+parameter. It does not require another dynamic compilation to handle different
+options, and the default ignore path does not scan excess keys.
 
 Pass parse options when creating or calling a parser. They apply throughout the
 parse; annotations cannot override them. Composite schemas parse children
@@ -173,7 +181,9 @@ An AST containing an encoding has no root `is` phase. Its compiled `decode`
 orchestrates transformations and middleware directly, executing each operation
 exactly once. The schemas before, between, and after those operations are
 resolved through the same central cache, so every checkpoint independently uses
-its compiled or interpreted parser:
+its compiled or interpreted parser. The final local checkpoint retains the
+original AST for checks and issues while skipping only that node's outer
+encoding. It is a private stage of the root entry, not a second cache entry:
 
 ```text
 cached checkpoint -> compiled decode operation -> cached checkpoint
@@ -187,7 +197,7 @@ parser role or retain a private interpreted copy of a compiled parser.
 `SchemaParser.is(schema, options)` always checks `SchemaAST.toType(schema.ast)`.
 It uses the generated `is` operation when available, otherwise it runs
 `validate` and reduces its result to a boolean. The options are captured when
-the type guard is created. In particular, `onExcessProperty`, `propertyOrder`,
+the type guard is created. Runtime `onExcessProperty`, `propertyOrder`,
 and checks have the same meaning as in decoding. `disableChecks: true` is an
 explicitly unsafe optimization: the caller takes responsibility for the type
 narrowing. There is no second parser cache or separately exposed compiled
@@ -204,11 +214,19 @@ also complete synchronously. Transformations and middleware are executed only
 by `decode` and remain outside the replay region. Enabling the JIT compiler
 changes the execution strategy, not the results of the `SchemaParser` APIs.
 
+Unavailability of dynamic `Function` construction selects the interpreter.
+Emitter, generated-source, and factory-initialization bugs are reported rather
+than hidden by that fallback. Exceptions raised during parsing still follow
+the ordinary Effect defect behavior.
+
 #### Performance snapshot
 
 This snapshot is checked in so compiler regressions appear as numeric changes in
 the Git diff. Keep scenario names, units, environment, and measurement settings
 unchanged when updating it. Lower values are better.
+
+The two runtime tables below retain their dated cross-library snapshots. The
+subsequent remediation comparison records the current worktree against HEAD.
 
 - Moltar snapshot date: 2026-09-04
 - Environment: Node 24.12.0, V8 13.6, Apple M3
@@ -259,36 +277,74 @@ of 300 ms after 100 ms warmup and covered the full worktree diff, including the
 removal of AST-local parse options and concurrency as well as the subsequent
 simplifications. Snapshot deltas alone do not establish a performance regression.
 
+##### Remediation comparison, 2026-09-05
+
+This snapshot predates the restoration of runtime `propertyOrder`. Runtime,
+bundle and memory figures below have not been remeasured for that restoration.
+
+Paired comparisons use `0a6e55fecd` as base and the remediation worktree as head,
+through public SchemaParser APIs. Moltar uses nine 500 ms rounds after 150 ms
+warmup, batch 256. The 46-case schema-compiler suite uses five 300 ms rounds
+after 100 ms warmup. Neither final run classifies a regression. This does not
+prove zero overhead; most intervals are inconclusive.
+
+| Compiled case                 | HEAD (ns/op) | Worktree (ns/op) |
+| ----------------------------- | -----------: | ---------------: |
+| `parseSafe`, valid            |          5.6 |              5.7 |
+| `parseSafe`, extra property   |          5.8 |              5.8 |
+| `parseSafe`, invalid          |       3060.0 |           3050.0 |
+| `assertLoose`, valid          |          3.6 |              3.6 |
+| `assertLoose`, extra property |          3.6 |              3.6 |
+| `assertLoose`, invalid        |          3.1 |              3.1 |
+| Moltar first use, decode      |       8560.0 |           8870.0 |
+| Moltar first use, is          |       8360.0 |           8760.0 |
+| Array, 100 valid elements     |        126.9 |            125.5 |
+| Record, numeric keys          |       4610.0 |           4650.0 |
+| Struct, 32 transformations    |       1200.0 |           1200.0 |
+| Struct middleware             |        414.5 |            405.6 |
+
+The number-key Record initially regressed because its local checkpoint compiled
+an unchecked Number. Reusing the root profitability criterion removed that
+regression while retaining the original AST for diagnostics. A dedicated
+nine-round check also found no classified regression. No mutable failure slot
+or call-shape workaround was introduced.
+
 Bundle sizes use the stable `schema-compiler.ts` and
 `schema-compiler-off.ts` fixtures in `packages/tools/bundle/fixtures`. Values
 are minified and gzipped decimal kilobytes, rounded independently from byte
 counts. This snapshot was refreshed on 2026-09-05 with `pnpm bundle-compare HEAD`
-against `5ea366e01c`, covering the full worktree diff. Of all 33 stable fixtures,
-23 became smaller and 10 were unchanged; none grew. All 17 Schema fixtures
-became smaller. Run `pnpm bundle-compare HEAD~1` after a compiler commit to
+against `0a6e55fecd`, covering the parsing-option and compiler corrections. Of
+34 stable fixtures, 17 grew, three became smaller and 14 were unchanged.
+Compiler-off grew by 0.08 KB and compiler-on by 0.19 KB. Run
+`pnpm bundle-compare HEAD~1` after a compiler commit to
 compare with the preceding commit.
 
 | Bundle fixture        | Size (KB) |
 | --------------------- | --------: |
-| Compiler not imported |     16.89 |
-| Compiler imported     |     21.96 |
-| Compiler increment    |      5.06 |
+| Compiler not imported |     17.04 |
+| Compiler imported     |     22.20 |
+| Compiler increment    |      5.16 |
 
-The retained-memory measurements below are from 2026-09-04 and have not been
-refreshed for this worktree.
+The retained-memory probe was refreshed on 2026-09-05. It creates 1,000 distinct
+Structs with `id: Number`, `name: String`, `active: Boolean`, and `score: Number`,
+retaining each schema, input and public sync decoder. It measures the difference
+between two forced GCs before first use and two forced GCs after one valid
+decode. Values are medians of seven fresh processes per revision and mode, with
+alternating revision order. This is a new paired probe, not a continuation of
+the older memory series. Cold CPU is process-wide and may exceed wall time.
 
-The retained-memory probe creates 1,000 distinct four-field Structs, retains
-their public sync decoders, then forces two garbage collections after the first
-valid decode. Values are medians of seven fresh processes. Cold CPU is
-process-wide and can exceed wall time when V8 uses concurrent work.
+| Cost after first valid decode, per schema | HEAD interpreted | Worktree interpreted | HEAD compiled | Worktree compiled |
+| ----------------------------------------- | ---------------: | -------------------: | ------------: | ----------------: |
+| Retained JavaScript heap                  |           1523 B |               1527 B |         714 B |             920 B |
+| V8 code and metadata                      |             48 B |                 51 B |         101 B |             119 B |
+| V8 bytecode and metadata                  |            6.3 B |                6.5 B |        16.2 B |            17.9 B |
+| Cold compile and decode wall time         |          1.71 µs |              1.79 µs |       4.90 µs |           4.97 µs |
+| Cold compile and decode process CPU       |          3.40 µs |              3.60 µs |       7.75 µs |           8.17 µs |
 
-| Compiler cost after first valid decode | Per schema |
-| -------------------------------------- | ---------: |
-| Retained JavaScript heap               |      907 B |
-| V8 code and metadata                   |      103 B |
-| V8 bytecode and metadata               |       17 B |
-| Cold compile and decode wall time      |    4.98 µs |
-| Cold compile and decode process CPU    |    7.90 µs |
+HEAD here is `0a6e55fecd`. The compiler's retained heap increases about 206 B per
+schema. Lazy normalization and operation preparation preserve installation
+semantics but have a retention cost. Moving the preparation getter to a shared
+prototype reduced an intermediate increase of about 567 B per schema.
 
 # Defining Elementary Schemas
 
@@ -1129,25 +1185,40 @@ Failure(Cause([Fail(SchemaError: Custom message
 */
 ```
 
-### Preserve unexpected keys
+### Extra keys and output order
 
-You can preserve unexpected keys by setting `onExcessProperty` to `preserve`.
+Runtime `onExcessProperty` supports `"ignore"`, the default, and `"error"`.
+`"preserve"` is no longer supported. Model accepted extras with an explicit
+`Record` or `StructWithRest` value schema, so their presence is visible in the
+type and their values are validated.
 
-**Example** (Preserving unexpected keys)
+`"error"` also applies to Records and StructWithRest. A key is excess only if
+no fixed field and no index signature selects it. Each applicable index
+signature still validates its value. Invalid values are not excess keys.
+`Struct({})` retains its special non-nullish contract, matching TypeScript `{}`.
+
+Configure output order through runtime `ParseOptions`:
 
 ```ts
-import { Schema } from "effect"
-
-const schema = Schema.Struct({
-  a: Schema.String
+const schema = Schema.Struct({ a: Schema.String, b: Schema.String })
+const decode = Schema.decodeUnknownSync(schema, {
+  propertyOrder: "original"
 })
-
-console.log(String(Schema.decodeUnknownExit(schema)({ a: "a", b: "b" }, { onExcessProperty: "preserve" })))
-/*
-Output:
-Success({"b":"b","a":"a"})
-*/
 ```
+
+`propertyOrder: "original"` retains input
+key order and appends newly created keys in output order; JavaScript's integer
+and symbol key ordering still applies. The default `"none"` leaves output
+order unspecified. The option propagates to nested objects, including Records
+and StructWithRest, and determines the object order observed by checks. It is
+available to decoders, encoders, and `SchemaParser.is`. Decoder and encoder
+calls can override the options supplied when creating them. No ordering policy
+is stored in the AST, in constructor options, or in structural representations.
+
+`Union.options` is an optional immutable-by-contract object containing `mode`,
+defaulting to `"anyOf"`. Normal AST projection and reconstruction copy it.
+Structural representations and generated schema code retain it. Regenerate old persisted
+representations; there is no compatibility reader for the old Union shape.
 
 ### Index Signatures
 
@@ -5356,6 +5427,27 @@ Schema can derive JSON Schemas, test data generators (Arbitraries), equivalence 
 
 By default, a schema produces a draft-2020-12 JSON Schema.
 
+Objects without index signatures omit `additionalProperties` by default.
+Explicit index constraints remain: `Record(String, Number)` constrains all
+string-keyed values, and pattern index signatures constrain their matching
+keys. Runtime `onExcessProperty` and AST property order do not affect generation.
+The existing `additionalProperties` generation override remains available when
+you explicitly want a different JSON Schema policy.
+OpenAI and Anthropic structured-output adapters request closed objects
+explicitly, retaining their provider-specific contract.
+
+The intended pipeline validates incoming JSON against the JSON Schema, then
+decodes it with `toCodecJson`. The codec may strip keys accepted by JSON Schema;
+the document is not a closed description of serialized output. Importing a
+document does not add a runtime excess-property setting. Keep the original JSON
+Schema validation stage for constraints the codec cannot retain, including
+closed object scopes. Existing scope handling in composed imports is unchanged.
+
+This is not a general semantic round-trip guarantee. In particular, losing
+closure constraints can change `oneOf` matches, and stripping in a union can
+interact with array uniqueness checks. Those equivalence questions, along with
+Unicode length, integer representation, and regex flags, remain follow-up work.
+
 The result is a data structure including:
 
 - the source of the JSON Schema (e.g. `draft-2020-12`, `draft-07`, etc...)
@@ -5568,8 +5660,7 @@ console.log(JSON.stringify(document, null, 2))
       "a": {
         "type": "string"
       }
-    },
-    "additionalProperties": false
+    }
   },
   "definitions": {}
 }
@@ -5606,8 +5697,7 @@ console.log(JSON.stringify(document, null, 2))
           }
         ]
       }
-    },
-    "additionalProperties": false
+    }
   },
   "definitions": {}
 }
@@ -5687,8 +5777,7 @@ console.log(JSON.stringify(document.schema, null, 2))
   },
   "required": [
     "headers"
-  ],
-  "additionalProperties": false
+  ]
 }
 */
 
@@ -5794,8 +5883,7 @@ console.log(JSON.stringify(document, null, 2))
       },
       "required": [
         "a"
-      ],
-      "additionalProperties": false
+      ]
     }
   },
   "definitions": {}

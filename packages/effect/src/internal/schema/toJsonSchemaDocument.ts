@@ -465,7 +465,7 @@ function compileJsonSchema(
           out.patternProperties = patternProperties
         }
         if (representation.indexSignatures.length === 0) {
-          out.additionalProperties = options?.additionalProperties ?? false
+          if (options?.additionalProperties !== undefined) out.additionalProperties = options.additionalProperties
         } else if (
           additionalProperties.length === 1 &&
           representation.propertySignatures.length === 0 &&
@@ -487,11 +487,11 @@ function compileJsonSchema(
       case "Union": {
         const types = representation.types.map((type, index) => recur(type, [...path, "types", index]))
         if (types.length === 0) return { not: {} }
-        if (representation.mode === "anyOf" && types.length > 1) {
+        if (representation.options?.mode !== "oneOf" && types.length > 1) {
           const compacted = compactEnums(types)
           if (compacted !== undefined) return compacted
         }
-        return representation.mode === "anyOf" ? { anyOf: types } : { oneOf: types }
+        return representation.options?.mode !== "oneOf" ? { anyOf: types } : { oneOf: types }
       }
     }
   }

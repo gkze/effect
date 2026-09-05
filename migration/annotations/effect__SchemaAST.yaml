@@ -330,7 +330,7 @@
   note: "Use the built-in JSON string codec instead of checking the old schema ID."
 "effect/SchemaAST#ParseOptions":
   replacement: "SchemaAST.ParseOptions"
-  note: "The name remains, but its constructor and fields changed in the v4 Base/check/context/encoding model."
+  note: "Pass parsing options at runtime, including propertyOrder. onExcessProperty supports ignore or error, not preserve; model extra values with an explicit Record or StructWithRest. The concurrency option was removed."
 "effect/SchemaAST#ParseOptionsAnnotationId":
   replacement: "none"
   note: "Parse options are no longer schema annotations. Pass options when creating or calling a decoder or encoder; there is no annotation-based override for nested schemas."
@@ -414,7 +414,7 @@
   note: "Symbol annotation IDs were removed; use declaration codec annotation keys."
 "effect/SchemaAST#TypeLiteral":
   replacement: "SchemaAST.Objects"
-  note: "The v4 SchemaAST redesign renamed this primitive, collection, or guard while preserving its role."
+  note: "Use Objects(propertySignatures, indexSignatures, annotations?, checks?, encoding?, context?, encodingChecks?). Output order is configured with runtime ParseOptions.propertyOrder."
 "effect/SchemaAST#TypeLiteralTransformation":
   replacement: "SchemaAST.Encoding"
   note: "Object transformations are encoding links; use Schema.encodeKeys for key mappings."
@@ -426,7 +426,7 @@
   note: "The v4 SchemaAST redesign renamed this primitive, collection, or guard while preserving its role."
 "effect/SchemaAST#Union":
   replacement: "SchemaAST.Union"
-  note: "The name remains, but its constructor and fields changed in the v4 Base/check/context/encoding model."
+  note: "Pass member ASTs and an optional options object: new SchemaAST.Union(types, { mode: 'oneOf' }). Read options.mode, defaulting to 'anyOf', instead of a direct mode field."
 "effect/SchemaAST#UniqueSymbol":
   replacement: "SchemaAST.UniqueSymbol"
   note: "The name remains, but its constructor and fields changed in the v4 Base/check/context/encoding model."

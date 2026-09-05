@@ -62,8 +62,7 @@ export const makeEncoding = (
         result = next(current, options)
       } else {
         result = Effect.flatMapEager(result, (value) => {
-          const nextResult = next(value, options)
-          return nextResult === InternalParser.sameExit ? InternalParser.succeed(value) : nextResult
+          return InternalParser.materialize(next(value, options), value)
         })
       }
     }
@@ -79,7 +78,6 @@ export const makeEncoding = (
       Effect.failCauseSync(() => Cause.map(cause, (issue) => new SchemaIssue.Encoding(ast, issue, input, options)))
   )
   return Effect.flatMapEager(result, (value) => {
-    const decoded = local(value, options)
-    return decoded === InternalParser.sameExit ? InternalParser.succeed(value) : decoded
+    return InternalParser.materialize(local(value, options), value)
   })
 }

@@ -1690,7 +1690,7 @@ describe("SchemaBinary", () => {
         { known: 1 }
       )
       assert.deepStrictEqual(
-        SchemaBinary.parser(Reader, { onExcessProperty: "preserve", propertyOrder: "original" }).feedSync(bytes),
+        SchemaBinary.parser(Reader, { onExcessProperty: "error", propertyOrder: "original" }).feedSync(bytes),
         [{ known: 1 }]
       )
     })

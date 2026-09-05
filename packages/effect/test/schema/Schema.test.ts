@@ -193,9 +193,10 @@ Missing key
       const failure = decode({ a: "a", b: "b" })
       assertTrue(Exit.isFailure(failure))
 
-      const success = decode({ a: "a", b: "b" }, { onExcessProperty: "preserve" })
+      const success = decode({ a: "a", b: "b" }, { onExcessProperty: "ignore" })
       assertTrue(Exit.isSuccess(success))
-      deepStrictEqual(success.value, { a: "a", b: "b" })
+      deepStrictEqual(success.value, { a: "a" })
+      assertTrue(Exit.isFailure(decode({ a: "a", b: "b" })))
     })
 
     it("encoders can receive options when they are created", () => {
@@ -207,9 +208,10 @@ Missing key
       const failure = encode({ a: "a", b: "b" })
       assertTrue(Exit.isFailure(failure))
 
-      const success = encode({ a: "a", b: "b" }, { onExcessProperty: "preserve" })
+      const success = encode({ a: "a", b: "b" }, { onExcessProperty: "ignore" })
       assertTrue(Exit.isSuccess(success))
-      deepStrictEqual(success.value, { a: "a", b: "b" })
+      deepStrictEqual(success.value, { a: "a" })
+      assertTrue(Exit.isFailure(encode({ a: "a", b: "b" })))
     })
   })
 
@@ -584,6 +586,16 @@ Missing key
     })
 
     describe("propertyOrder", () => {
+      it("preserves the order of explicitly modeled extra properties", () => {
+        const schema = Schema.StructWithRest(Schema.Struct({ a: Schema.String, b: Schema.String }), [
+          Schema.Record(Schema.String, Schema.String)
+        ])
+        const input = { c: "c", b: "b", a: "a", d: "d" }
+        const output = Schema.decodeUnknownSync(schema)(input, { propertyOrder: "original" })
+        deepStrictEqual(output, input)
+        deepStrictEqual(Object.keys(output), ["c", "b", "a", "d"])
+      })
+
       it("all required fields", () => {
         const schema = Schema.Struct({
           a: Schema.String,
@@ -592,10 +604,9 @@ Missing key
 
         const input = { c: "c", b: "b", a: "a", d: "d" }
         const output = Schema.decodeUnknownSync(schema)(input, {
-          propertyOrder: "original",
-          onExcessProperty: "preserve"
+          propertyOrder: "original"
         })
-        deepStrictEqual(Object.keys(output), ["c", "b", "a", "d"])
+        deepStrictEqual(Object.keys(output), ["b", "a"])
       })
 
       it("optional field with default", () => {
@@ -609,10 +620,10 @@ Missing key
 
         const input = { c: "c", b: "b", d: "d" }
         const output = Schema.decodeUnknownSync(schema)(input, {
-          propertyOrder: "original",
-          onExcessProperty: "preserve"
+          propertyOrder: "original"
         })
-        deepStrictEqual(Object.keys(output), ["c", "b", "d", "a"])
+        deepStrictEqual(Object.keys(output), ["b", "a"])
+        strictEqual(output.a, "default-a")
       })
     })
 
@@ -645,16 +656,17 @@ Expected no excess property
         )
       })
 
-      it("preserve", async () => {
+      it("ignore strips undeclared string and symbol properties", async () => {
         const schema = Schema.Struct({
           a: Schema.String
         })
         const asserts = new TestSchema.Asserts(schema)
 
-        const decoding = asserts.decoding({ parseOptions: { onExcessProperty: "preserve" } })
+        const decoding = asserts.decoding({ parseOptions: { onExcessProperty: "ignore" } })
         const sym = Symbol("sym")
         await decoding.succeed(
-          { a: "a", b: "b", c: "c", [sym]: "sym" }
+          { a: "a", b: "b", c: "c", [sym]: "sym" },
+          { a: "a" }
         )
       })
     })
@@ -6944,17 +6956,17 @@ Expected a value between -2147483648 and 2147483647`
       assertFalse("extra" in instance)
     })
 
-    it("constructor preserves excess properties when requested", () => {
+    it("constructor strips excess properties with explicit ignore", () => {
       class A extends Schema.Class<A>("A")({
         a: Schema.String
       }) {}
 
       const instance = new A({ a: "a", extra: "extra" } as any, {
-        parseOptions: { onExcessProperty: "preserve" }
+        parseOptions: { onExcessProperty: "ignore" }
       })
 
       strictEqual(instance.a, "a")
-      strictEqual((instance as any).extra, "extra")
+      assertFalse("extra" in instance)
     })
 
     it("constructor rejects excess properties when requested", () => {
@@ -7060,7 +7072,7 @@ Expected a value between -2147483648 and 2147483647`
         assertFalse("extra" in instance)
       })
 
-      it("constructor preserves subclass fields and excess properties when requested", () => {
+      it("constructor keeps subclass fields and strips excess properties with explicit ignore", () => {
         class A extends Schema.Class<A>("A")({
           a: Schema.String
         }) {}
@@ -7069,12 +7081,12 @@ Expected a value between -2147483648 and 2147483647`
         }) {}
 
         const instance = new B({ a: "a", b: 2, extra: "extra" } as any, {
-          parseOptions: { onExcessProperty: "preserve" }
+          parseOptions: { onExcessProperty: "ignore" }
         })
 
         strictEqual(instance.a, "a")
         strictEqual(instance.b, 2)
-        strictEqual((instance as any).extra, "extra")
+        assertFalse("extra" in instance)
       })
 
       it("constructor does not treat subclass fields as excess properties", () => {
@@ -7281,19 +7293,19 @@ Expected a value between -2147483648 and 2147483647`
       assertFalse("extra" in err)
     })
 
-    it("constructor preserves excess properties when requested", () => {
+    it("constructor strips excess properties with explicit ignore", () => {
       class E extends Schema.Error<E>("E")({
         message: Schema.String,
         code: Schema.Number
       }) {}
 
       const err = new E({ message: "boom", code: 1, extra: "extra" } as any, {
-        parseOptions: { onExcessProperty: "preserve" }
+        parseOptions: { onExcessProperty: "ignore" }
       })
 
       strictEqual(err.message, "boom")
       strictEqual(err.code, 1)
-      strictEqual((err as any).extra, "extra")
+      assertFalse("extra" in err)
     })
 
     it("Struct argument", async () => {

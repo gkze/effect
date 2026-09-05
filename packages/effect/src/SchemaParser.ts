@@ -168,20 +168,7 @@ export function _is<T>(ast: SchemaAST.AST, options: SchemaAST.ParseOptions = Sch
   return <I>(input: I): input is I & T => {
     if (!initialized) {
       parser = normalCompiler(typeAST)
-      const compiled = getCompiledParser(parser)
-      const compiledIs = compiled?.is
-      if (compiledIs !== undefined) {
-        compiledGuard = options === SchemaAST.defaultParseOptions
-          ? compiledIs.default
-          : (input) => compiledIs(input, options)
-      } else {
-        const validate = compiled?.validate
-        if (validate !== undefined) {
-          compiledGuard = options === SchemaAST.defaultParseOptions
-            ? (input) => validate.default(input) !== CompilerRegistry.invalid
-            : (input) => validate(input, options) !== CompilerRegistry.invalid
-        }
-      }
+      compiledGuard = CompilerRegistry.prepareIs(parser, options)
       initialized = true
     }
     if (compiledGuard !== undefined) {
@@ -570,14 +557,14 @@ export function decodeUnknownSync<S extends Schema.ConstraintDecoder<unknown>>(
   const decode = asSync(decodeUnknownEffect(schema, options))
   if (options !== undefined) return decode
   let parser: Parser | undefined
-  let compiled: CompilerRegistry.OptimizedCompiledDecoder | undefined
+  let compiled: CompilerRegistry.PreparedSyncDecoder | undefined
   let validate: ((input: unknown) => unknown | typeof CompilerRegistry.invalid) | undefined
   return (input, overrideOptions) => {
     if (overrideOptions !== undefined) return decode(input, overrideOptions)
     if (parser === undefined) {
       parser = normalCompiler(schema.ast)
-      compiled = getCompiledParser(parser)
-      validate = compiled?.validate?.default
+      compiled = CompilerRegistry.prepareSync(parser)
+      validate = compiled?.validate
       if (compiled !== undefined && validate === undefined) parser = compiled.decode
     }
     if (compiled === undefined) return runParserSync<S["Type"]>(parser, input, SchemaAST.defaultParseOptions)
@@ -1128,9 +1115,6 @@ export interface Parser {
 export interface Compiler {
   (ast: SchemaAST.AST): Parser
 }
-
-const getCompiledParser = (parser: Parser): CompilerRegistry.OptimizedCompiledDecoder | undefined =>
-  CompilerRegistry.getCompiledDecoder(parser)
 
 const normalCompiler: Compiler = CompilerRegistry.resolve
 

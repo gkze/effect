@@ -199,7 +199,7 @@ export const propertyOrderOriginal = decodeCase(
   propertyOrderSchema,
   propertyOrderInput,
   true,
-  { onExcessProperty: "preserve", propertyOrder: "original" }
+  { propertyOrder: "original" }
 )
 
 const recursiveTree = Schema.Struct({

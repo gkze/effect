@@ -11,8 +11,10 @@ import {
   type OptimizedIs,
   type OptimizedValidate,
   type Parser,
+  prepareDecode,
   type ResolveParser
 } from "./compilerRegistry.ts"
+import { applyChecks } from "./interpreter.ts"
 import { hasDefaultObjectOptions, type ParsedProperty, resumeProperties } from "./objects.ts"
 import * as InternalParser from "./parser.ts"
 import { makeEncoding } from "./transformation.ts"
@@ -34,10 +36,22 @@ const supportsDynamicFunction = (): boolean => {
   }
 }
 
+const makeFunction = (...parameters: Array<string>): Function | undefined => {
+  try {
+    return globalThis.Function(...parameters)
+  } catch (error) {
+    // Recheck the capability in case the environment changed after activation.
+    // A syntax/emitter defect must not silently select the interpreter.
+    functionConstructor = undefined
+    if (!supportsDynamicFunction()) return undefined
+    throw error
+  }
+}
+
 type Emission = 0 | 1 | 2
 
-const getEmission = (ast: SchemaAST.AST, depth = 0): Emission => {
-  if (depth > maxGeneratedDepth || ast.encoding !== undefined) return 0
+const getEmission = (ast: SchemaAST.AST, depth = 0, local = false): Emission => {
+  if (depth > maxGeneratedDepth || !local && ast.encoding !== undefined) return 0
   switch (ast._tag) {
     case "Null":
     case "Undefined":
@@ -114,8 +128,6 @@ type Emitter = {
   readonly unionHelpers: Map<SchemaAST.Union, string>
   readonly constants: Array<unknown>
   readonly constantIndexes: Map<unknown, number>
-  readonly options: "D" | "o"
-  usesOptions: boolean
   next: number
 }
 
@@ -131,6 +143,26 @@ const assignProperty = (output: string, key: string, value: string, name: Proper
   name === "__proto__"
     ? `Object.defineProperty(${output},${key},{value:${value},writable:true,enumerable:true,configurable:true})`
     : `${output}[${key}]=${value}`
+
+const hasExcessProperties = (
+  ast: SchemaAST.Objects,
+  input: Record<PropertyKey, unknown>,
+  options: SchemaAST.ParseOptions
+): boolean => {
+  const covered = new Set<PropertyKey>(ast.propertySignatures.map((property) => property.name))
+  for (const index of ast.indexSignatures) {
+    for (const key of SchemaAST.getIndexSignatureKeys(input, index.parameter, options)) covered.add(key)
+  }
+  return Reflect.ownKeys(input).some((key) => !covered.has(key))
+}
+
+const orderProperties = (input: object, output: Record<PropertyKey, unknown>): Record<PropertyKey, unknown> => {
+  const ordered: Record<PropertyKey, unknown> = {}
+  for (const key of [...Reflect.ownKeys(input), ...Reflect.ownKeys(output)]) {
+    if (Object.hasOwn(output, key)) assignDecodedProperty(ordered, key, output[key])
+  }
+  return ordered
+}
 
 const constant = (emitter: Emitter, value: unknown): string => {
   if (typeof value === "number" && value === 0) {
@@ -175,8 +207,8 @@ const getEncodingChecks = (ast: SchemaAST.AST): SchemaAST.Checks | undefined => 
   }
 }
 
-const shouldCompileParser = (ast: SchemaAST.AST): boolean => {
-  if (ast.encoding !== undefined) return true
+const shouldCompileParser = (ast: SchemaAST.AST, local = false): boolean => {
+  if (!local && ast.encoding !== undefined) return true
   if (ast.checks !== undefined || getEncodingChecks(ast) !== undefined) return true
   switch (ast._tag) {
     case "TemplateLiteral":
@@ -235,15 +267,13 @@ function emit(
   const encodingChecks = getEncodingChecks(ast)
   const astConstant = ast.checks !== undefined || encodingChecks !== undefined ? constant(emitter, ast) : undefined
   if (encodingChecks !== undefined) {
-    emitter.usesOptions = true
-    statements.push(`if(K(${astConstant},${input},1,${emitter.options}))return I`)
+    statements.push(`if(K(${astConstant},${input},1,o))return I`)
   }
   if (ast.checks === undefined) return output
-  emitter.usesOptions = true
   const checked = variable(emitter)
   statements.push(
     `const ${checked}=${output}`,
-    `if(K(${astConstant},${checked},0,${emitter.options}))return I`
+    `if(K(${astConstant},${checked},0,o))return I`
   )
   return checked
 }
@@ -256,7 +286,7 @@ const emitDecoderHelper = (ast: SchemaAST.AST, emitter: Emitter, needsValue: boo
   const statements: Array<string> = []
   const output = emit(ast, "i", statements, emitter, needsValue)
   emitter.helpers.push(
-    `function ${name}(i${emitter.options === "o" ? ",o" : ""}){${statements.join(";")};return ${output}}`
+    `function ${name}(i,o){${statements.join(";")};return ${output}}`
   )
   return name
 }
@@ -289,12 +319,11 @@ const emitIndexes = (
     const index = variable(emitter)
     const key = variable(emitter)
     const parameter = signature.parameter
-    if (parameter._tag !== "String" || parameter.checks !== undefined) emitter.usesOptions = true
     statements.push(
       `const ${keys}=${
         parameter._tag === "String" && parameter.checks === undefined
           ? `Object.keys(${input})`
-          : `G(${input},${constant(emitter, parameter)},${emitter.options})`
+          : `G(${input},${constant(emitter, parameter)},o)`
       }`
     )
     const loop: Array<string> = [`const ${key}=${keys}[${index}]`]
@@ -373,9 +402,8 @@ const emitBase = (
       statements.push(`if(typeof ${input}!=="bigint")return I`)
       return input
     case "TemplateLiteral": {
-      emitter.usesOptions = true
       const template = constant(emitter, ast)
-      statements.push(`if(!T(${template},${input},${emitter.options}))return I`)
+      statements.push(`if(!T(${template},${input},o))return I`)
       return input
     }
     case "Arrays": {
@@ -455,6 +483,11 @@ const emitBase = (
       statements.push(
         `if(typeof ${input}!=="object"||${input}===null||Array.isArray(${input}))return I`
       )
+      statements.push(`if(o!==D&&o.onExcessProperty==="error"&&E(${constant(emitter, ast)},${input},o))return I`)
+      const order = (output: string): string =>
+        needsValue
+          ? `(o!==D&&o.propertyOrder==="original"?O(${input},${output}):${output})`
+          : output
       const hasOptional = ast.propertySignatures.some((property) => isOptional(property.type))
       if (needsValue && ast.propertySignatures.length > 0 && !hasOptional) {
         const output = variable(emitter)
@@ -470,7 +503,7 @@ const emitBase = (
         })
         statements.push(`const ${output}={${properties.join(",")}}`)
         if (ast.indexSignatures.length > 0) emitIndexes(ast, input, output, statements, emitter, true)
-        return output
+        return order(output)
       }
       const output = needsValue ? variable(emitter) : undefined
       if (output !== undefined) statements.push(`const ${output}={}`)
@@ -491,13 +524,13 @@ const emitBase = (
         )
       }
       if (ast.indexSignatures.length > 0) emitIndexes(ast, input, output, statements, emitter, needsValue)
-      return output ?? input
+      return order(output ?? input)
     }
     case "Union": {
       const memberValues = ast.types.map(lookupMemberValues)
       const hasSignedZeroLiteral = ast.types.some((type) => type._tag === "Literal" && type.literal === 0)
       if (!hasSignedZeroLiteral && memberValues.every((values) => values !== undefined)) {
-        if (ast.mode === "anyOf") {
+        if (ast.options?.mode !== "oneOf") {
           const values = constant(emitter, new Set(memberValues.flat()))
           statements.push(`if(!${values}.has(${input}))return I`)
         } else {
@@ -521,20 +554,16 @@ const emitBase = (
         `const ${candidates}=U(${input},${types})`,
         `let ${output}=I,${candidate},${decoder}`
       )
-      if (ast.mode === "anyOf") {
+      if (ast.options?.mode !== "oneOf") {
         statements.push(
-          `for(let ${index}=0;${index}<${candidates}.length;${index}++){${decoder}=${decoders}.get(${candidates}[${index}]);${candidate}=${decoder}(${input}${
-            emitter.options === "o" ? ",o" : ""
-          });if(${candidate}!==I){${output}=${candidate};break}}`
+          `for(let ${index}=0;${index}<${candidates}.length;${index}++){${decoder}=${decoders}.get(${candidates}[${index}]);${candidate}=${decoder}(${input},o);if(${candidate}!==I){${output}=${candidate};break}}`
         )
         statements.push(`if(${output}===I)return I`)
       } else {
         const successes = variable(emitter)
         statements.push(`let ${successes}=0`)
         statements.push(
-          `for(let ${index}=0;${index}<${candidates}.length;${index}++){${decoder}=${decoders}.get(${candidates}[${index}]);${candidate}=${decoder}(${input}${
-            emitter.options === "o" ? ",o" : ""
-          });if(${candidate}!==I){${successes}++;${output}=${candidate}}}`
+          `for(let ${index}=0;${index}<${candidates}.length;${index}++){${decoder}=${decoders}.get(${candidates}[${index}]);${candidate}=${decoder}(${input},o);if(${candidate}!==I){${successes}++;${output}=${candidate}}}`
         )
         statements.push(`if(${successes}!==1)return I`)
       }
@@ -805,21 +834,20 @@ function compileDetailedObjects(ast: SchemaAST.Objects): DetailedDecoder {
     const errorsAll = options.errors === "all"
     let issues: [SchemaIssue.Issue, ...Array<SchemaIssue.Issue>] | undefined
     let inputKeys: ReadonlyArray<PropertyKey> | undefined
-    if (indexes.length === 0 && options.onExcessProperty !== undefined && options.onExcessProperty !== "ignore") {
+    const indexKeys = indexes.length > 0 && options.onExcessProperty === "error"
+      ? indexes.map((index) => SchemaAST.getIndexSignatureKeys(record, index.signature.parameter, options))
+      : undefined
+    if (options.onExcessProperty === "error") {
       inputKeys = Reflect.ownKeys(record)
       for (const key of inputKeys) {
-        if (expectedKeysSet.has(key)) continue
-        if (options.onExcessProperty === "preserve") {
-          assignDecodedProperty(output, key, record[key])
-        } else {
-          const issue = new SchemaIssue.Pointer(
-            [key],
-            new SchemaIssue.UnexpectedKey(ast, record[key], options)
-          )
-          if (!errorsAll) return composite(ast, issue, input, options)
-          if (issues === undefined) issues = [issue]
-          else issues.push(issue)
-        }
+        if (expectedKeysSet.has(key) || indexKeys?.some((keys) => keys.includes(key))) continue
+        const issue = new SchemaIssue.Pointer(
+          [key],
+          new SchemaIssue.UnexpectedKey(ast, record[key], options)
+        )
+        if (!errorsAll) return composite(ast, issue, input, options)
+        if (issues === undefined) issues = [issue]
+        else issues.push(issue)
       }
     }
     for (const property of properties) {
@@ -850,11 +878,12 @@ function compileDetailedObjects(ast: SchemaAST.Objects): DetailedDecoder {
         else issues.push(issue)
       }
     }
-    for (const index of indexes) {
+    for (let i = 0; i < indexes.length; i++) {
+      const index = indexes[i]
       const parameter = index.signature.parameter
-      const keys = parameter === SchemaAST.string
+      const keys = indexKeys?.[i] ?? (parameter === SchemaAST.string
         ? Object.keys(record)
-        : SchemaAST.getIndexSignatureKeys(record, parameter, options)
+        : SchemaAST.getIndexSignatureKeys(record, parameter, options))
       for (const key of keys) {
         let decodedKey: unknown = key
         if (parameter !== SchemaAST.string) {
@@ -883,13 +912,7 @@ function compileDetailedObjects(ast: SchemaAST.Objects): DetailedDecoder {
       }
     }
     if (issues !== undefined) return fail(new SchemaIssue.Composite(ast, issues, input, options))
-    if (options.propertyOrder === "original") {
-      const ordered: Record<PropertyKey, unknown> = {}
-      for (const key of [...(inputKeys ?? Reflect.ownKeys(record)), ...expectedKeys]) {
-        if (Object.hasOwn(output, key)) assignDecodedProperty(ordered, key, output[key])
-      }
-      return ordered
-    }
+    if (options.propertyOrder === "original") return orderProperties(record, output)
     return output
   }
 }
@@ -900,7 +923,7 @@ function compileDetailedUnion(ast: SchemaAST.Union): DetailedDecoder {
     if (input === InternalParser.missing) return input
     const candidates = SchemaAST.getCandidates(input, ast.types)
     const issues: Array<SchemaIssue.Issue> = []
-    const successes: Array<SchemaAST.AST> | undefined = ast.mode === "oneOf" ? [] : undefined
+    const successes: Array<SchemaAST.AST> | undefined = ast.options?.mode === "oneOf" ? [] : undefined
     let output: unknown = invalid
     for (const candidate of candidates) {
       const decoded = decoders.get(candidate)!(input, options)
@@ -998,90 +1021,87 @@ const makeComposedObjectDefault = (
   properties: ReadonlyArray<ParsedProperty>,
   fallback: Parser
 ): Parser | undefined => {
-  try {
-    const statements = [
-      "if(o!==D&&!O(o))return F(i,o)",
-      "if(i===M)return MX",
-      "if(typeof i!==\"object\"||i===null||Array.isArray(i))return IT(T,i,o)",
-      "const out={}",
-      "let r,x"
-    ]
-    for (let index = 0; index < properties.length; index++) {
-      const property = properties[index]
-      const key = typeof property.name === "string" ? JSON.stringify(property.name) : "P[" + index + "].name"
-      const value = "v" + index
-      const assign = property.name === "__proto__" || typeof property.name !== "string"
-        ? "AP(out," + key + "," + value + ")"
-        : "out[" + key + "]=" + value
-      const assignDecoded = property.name === "__proto__" || typeof property.name !== "string"
-        ? "AP(out," + key + ",x)"
-        : "out[" + key + "]=x"
-      const present = property.name === "__proto__" ? "Object.hasOwn(i," + key + ")" : key + " in i"
-      if (property.valueFirst) {
-        statements.push(
-          "let " + value + "=i[" + key + "]",
-          "if(" + value + "===void 0&&!(" + present + "))" + value + "=M;else " + assign
-        )
-      } else {
-        statements.push(
-          "let " + value,
-          "if(" + present + "){" + value + "=i[" + key + "];" + assign + "}else " + value + "=M"
-        )
-      }
+  const statements = [
+    "if(o!==D&&!O(o))return F(i,o)",
+    "if(i===M)return MX",
+    "if(typeof i!==\"object\"||i===null||Array.isArray(i))return IT(T,i,o)",
+    "const out={}",
+    "let r,x"
+  ]
+  for (let index = 0; index < properties.length; index++) {
+    const property = properties[index]
+    const key = typeof property.name === "string" ? JSON.stringify(property.name) : "P[" + index + "].name"
+    const value = "v" + index
+    const assign = property.name === "__proto__" || typeof property.name !== "string"
+      ? "AP(out," + key + "," + value + ")"
+      : "out[" + key + "]=" + value
+    const assignDecoded = property.name === "__proto__" || typeof property.name !== "string"
+      ? "AP(out," + key + ",x)"
+      : "out[" + key + "]=x"
+    const present = property.name === "__proto__" ? "Object.hasOwn(i," + key + ")" : key + " in i"
+    if (property.valueFirst) {
       statements.push(
-        "r=P[" + index + "].parser(" + value + ",o)",
-        "if(r!==S){if(!X(r))return R(T,P,i,out," + index +
-          ",r,o);if(r._tag===\"Failure\")return W(T,i,o," + key +
-          ",r);x=r[A];if(x===M){delete out[" + key + "];" +
-          (isOptional(property.type) ? "" : "return N(T,i,o,P[" + index + "])") +
-          "}else{" + assignDecoded + "}}"
+        "let " + value + "=i[" + key + "]",
+        "if(" + value + "===void 0&&!(" + present + "))" + value + "=M;else " + assign
+      )
+    } else {
+      statements.push(
+        "let " + value,
+        "if(" + present + "){" + value + "=i[" + key + "];" + assign + "}else " + value + "=M"
       )
     }
-    statements.push("return SU(out)")
-    const source = "\"use strict\";return function(i,o){try{" + statements.join(";") +
-      "}catch(e){return DIE(e)}}"
-    return globalThis.Function(
-      "T",
-      "P",
-      "D",
-      "O",
-      "F",
-      "M",
-      "MX",
-      "IT",
-      "AP",
-      "S",
-      "A",
-      "X",
-      "R",
-      "W",
-      "N",
-      "SU",
-      "DIE",
-      source
-    )(
-      ast,
-      properties,
-      SchemaAST.defaultParseOptions,
-      hasDefaultObjectOptions,
-      fallback,
-      InternalParser.missing,
-      InternalParser.missingExit,
-      (ast: SchemaAST.AST, input: unknown, options: SchemaAST.ParseOptions) =>
-        Effect.fail(new SchemaIssue.InvalidType(ast, input, options)),
-      assignDecodedProperty,
-      InternalParser.sameExit,
-      InternalParser.args,
-      effectIsExit,
-      resumeComposedObject,
-      failComposedObjectProperty,
-      failMissingComposedObjectProperty,
-      InternalParser.succeed,
-      Effect.die
-    ) as Parser
-  } catch {
-    return undefined
+    statements.push(
+      "r=P[" + index + "].parser(" + value + ",o)",
+      "if(r!==S){if(!X(r))return R(T,P,i,out," + index +
+        ",r,o);if(r._tag===\"Failure\")return W(T,i,o," + key +
+        ",r);x=r[A];if(x===M){delete out[" + key + "];" +
+        (isOptional(property.type) ? "" : "return N(T,i,o,P[" + index + "])") +
+        "}else{" + assignDecoded + "}}"
+    )
   }
+  statements.push("return SU(out)")
+  const source = "\"use strict\";return function(i,o){try{" + statements.join(";") +
+    "}catch(e){return DIE(e)}}"
+  const factory = makeFunction(
+    "T",
+    "P",
+    "D",
+    "O",
+    "F",
+    "M",
+    "MX",
+    "IT",
+    "AP",
+    "S",
+    "A",
+    "X",
+    "R",
+    "W",
+    "N",
+    "SU",
+    "DIE",
+    source
+  )
+  return factory?.(
+    ast,
+    properties,
+    SchemaAST.defaultParseOptions,
+    hasDefaultObjectOptions,
+    fallback,
+    InternalParser.missing,
+    InternalParser.missingExit,
+    (ast: SchemaAST.AST, input: unknown, options: SchemaAST.ParseOptions) =>
+      Effect.fail(new SchemaIssue.InvalidType(ast, input, options)),
+    assignDecodedProperty,
+    InternalParser.sameExit,
+    InternalParser.args,
+    effectIsExit,
+    resumeComposedObject,
+    failComposedObjectProperty,
+    failMissingComposedObjectProperty,
+    InternalParser.succeed,
+    Effect.die
+  ) as Parser
 }
 
 const makeComposedObjectDecode = (
@@ -1117,7 +1137,17 @@ const makeEncodingDetailed = (
 ): OptimizedCompiledDecoder["decode"] => {
   const links = ast.encoding!
   const parsers = links.map((link) => resolveDirect(resolve, link.to))
-  const local = resolveDirect(resolve, SchemaAST.replaceEncoding(ast, undefined))
+  // The local stage skips only this node's encoding. Its checks and issues
+  // still belong to the original AST; child encodings resolve normally.
+  const emission = shouldCompileParser(ast, true) ? getEmission(ast, 0, true) : 0
+  const local = emission !== 0
+    ? prepareDecode(new CompiledDecoderImpl(ast, emission === 2))
+    : applyChecks(
+      ast,
+      ast._tag === "Objects" && ast.indexSignatures.length === 0
+        ? makeComposedObjectDecode(ast, resolve) ?? ast.getParser(resolve)
+        : ast.getParser(resolve)
+    )
   const decode = makeEncoding(ast, links, parsers, local)
   return (input, options) => {
     try {
@@ -1132,46 +1162,35 @@ type GeneratedValidate = (input: unknown, options?: SchemaAST.ParseOptions) => u
 
 const makeValidate = (
   ast: SchemaAST.AST,
-  needsValue: boolean,
-  defaultOptions: boolean
-): { readonly run: GeneratedValidate; readonly usesOptions: boolean } | undefined => {
-  try {
-    const emitter: Emitter = {
-      statements: [],
-      helpers: [],
-      initializers: [],
-      decoderHelpers: new Map(),
-      unionHelpers: new Map(),
-      constants: [],
-      constantIndexes: new Map(),
-      options: defaultOptions ? "D" : "o",
-      usesOptions: false,
-      next: 0
-    }
-    const output = emit(ast, "i", emitter.statements, emitter, needsValue)
-    const source = `"use strict";${emitter.helpers.join(";")};${emitter.initializers.join(";")};return function(i${
-      defaultOptions ? "" : ",o"
-    }){${emitter.statements.join(";")};return ${output}}`
-    const run = globalThis.Function("I", "C", "K", "T", "U", "G", "D", source)(
-      invalid,
-      emitter.constants,
-      failsChecks,
-      matchesTemplateLiteral,
-      SchemaAST.getCandidates,
-      SchemaAST.getIndexSignatureKeys,
-      SchemaAST.defaultParseOptions
-    ) as GeneratedValidate
-    return { run, usesOptions: emitter.usesOptions }
-  } catch {
-    return undefined
+  needsValue: boolean
+): GeneratedValidate | undefined => {
+  const emitter: Emitter = {
+    statements: [],
+    helpers: [],
+    initializers: [],
+    decoderHelpers: new Map(),
+    unionHelpers: new Map(),
+    constants: [],
+    constantIndexes: new Map(),
+    next: 0
   }
+  const output = emit(ast, "i", emitter.statements, emitter, needsValue)
+  const source = `"use strict";${emitter.helpers.join(";")};${emitter.initializers.join(";")};return function(i,o=D){${
+    emitter.statements.join(";")
+  };return ${output}}`
+  const factory = makeFunction("I", "C", "K", "T", "U", "G", "D", "E", "O", source)
+  return factory?.(
+    invalid,
+    emitter.constants,
+    failsChecks,
+    matchesTemplateLiteral,
+    SchemaAST.getCandidates,
+    SchemaAST.getIndexSignatureKeys,
+    SchemaAST.defaultParseOptions,
+    hasExcessProperties,
+    orderProperties
+  )
 }
-
-const usesDefaultOutputOptions = (options: SchemaAST.ParseOptions): boolean =>
-  options === SchemaAST.defaultParseOptions ||
-  (options.onExcessProperty !== "error" && options.onExcessProperty !== "preserve" &&
-    options.propertyOrder !== "original")
-
 class CompiledDecoderImpl {
   readonly ast: SchemaAST.AST
   readonly emitIs: boolean
@@ -1188,44 +1207,22 @@ class CompiledDecoderImpl {
   }
 
   get is(): OptimizedIs | undefined {
-    const generated = this.emitIs ? makeValidate(this.ast, false, true) : undefined
-    const defaultValidate = generated?.run
-    let withOptions = generated?.usesOptions ? undefined : defaultValidate
-    const is: OptimizedIs | undefined = defaultValidate === undefined
+    const generated = this.emitIs ? makeValidate(this.ast, false) : undefined
+    const is: OptimizedIs | undefined = generated === undefined
       ? undefined
       : Object.assign(
-        (input: unknown, options: SchemaAST.ParseOptions) => {
-          if (options === SchemaAST.defaultParseOptions) return defaultValidate(input) !== invalid
-          if (usesDefaultOutputOptions(options)) {
-            withOptions ??= makeValidate(this.ast, false, false)?.run
-            if (withOptions !== undefined) return withOptions(input, options) !== invalid
-          }
-          return this.validate!(input, options) !== invalid
-        },
-        { default: (input: unknown) => defaultValidate(input) !== invalid }
+        (input: unknown, options: SchemaAST.ParseOptions) => generated(input, options) !== invalid,
+        { default: (input: unknown) => generated(input) !== invalid }
       )
     Object.defineProperty(this, "is", { value: is })
     return is
   }
 
   get validate(): OptimizedValidate | undefined {
-    const generated = makeValidate(this.ast, true, true)
-    const defaultValidate = generated?.run
-    let withOptions = generated?.usesOptions ? undefined : defaultValidate
-    const validate: OptimizedValidate | undefined = defaultValidate === undefined
+    const generated = makeValidate(this.ast, true)
+    const validate: OptimizedValidate | undefined = generated === undefined
       ? undefined
-      : Object.assign(
-        (input: unknown, options: SchemaAST.ParseOptions) => {
-          if (options === SchemaAST.defaultParseOptions) return defaultValidate(input)
-          if (usesDefaultOutputOptions(options)) {
-            withOptions ??= makeValidate(this.ast, true, false)?.run
-            if (withOptions !== undefined) return withOptions(input, options)
-          }
-          const output = this.detailed(input, options)
-          return isFailure(output) ? invalid : output
-        },
-        { default: defaultValidate }
-      )
+      : Object.assign(generated, { default: generated })
     Object.defineProperty(this, "validate", { value: validate })
     return validate
   }

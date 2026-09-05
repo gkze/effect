@@ -13,7 +13,7 @@ describe("SchemaCompiler", () => {
     SchemaCompiler.set(schema.ast, {
       is: () => true,
       validate: (_input, options) =>
-        options.onExcessProperty === "preserve"
+        options.propertyOrder === "original"
           ? { value: "compiled" }
           : SchemaCompiler.invalid,
       decode: () => {
@@ -23,7 +23,7 @@ describe("SchemaCompiler", () => {
     })
 
     const late = SchemaParser.decodeUnknownSync(schema)
-    deepStrictEqual(late({ value: 1 }, { onExcessProperty: "preserve" }), { value: "compiled" })
+    deepStrictEqual(late({ value: 1 }, { propertyOrder: "original" }), { value: "compiled" })
     deepStrictEqual(late({ value: 1 }), { value: "detailed" })
     strictEqual(decodes, 1)
 

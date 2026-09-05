@@ -166,14 +166,12 @@ describe("OpenApi", () => {
     assert.deepStrictEqual(content[profileA]?.schema, {
       type: "object",
       properties: { a: { type: "string" } },
-      required: ["a"],
-      additionalProperties: false
+      required: ["a"]
     })
     assert.deepStrictEqual(content[profileB]?.schema, {
       type: "object",
       properties: { b: { type: "string" } },
-      required: ["b"],
-      additionalProperties: false
+      required: ["b"]
     })
   })
 

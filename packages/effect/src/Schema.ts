@@ -3319,7 +3319,7 @@ export interface Struct<Fields extends Struct.Fields> extends BottomLazy<SchemaA
    * Options:
    *
    * - `unsafePreserveChecks` - if `true`, keep any `.check(...)` constraints
-   *   that were attached to the original union. Defaults to `false`.
+   *   that were attached to the original struct. Defaults to `false`.
    *
    *   **Warning**: This is an unsafe operation. Since `mapFields`
    *   transformations change the schema type, the original refinement functions
@@ -3365,6 +3365,12 @@ function makeStruct<const Fields extends Struct.Fields>(ast: SchemaAST.Objects, 
  * Parsing copies inherited field values to own properties on the output.
  * Dynamic {@link Record} index signatures continue to select own properties
  * only.
+ *
+ * Runtime `propertyOrder: "original"` retains input key order on both decoding
+ * and encoding, including nested objects. The default `"none"` leaves key order
+ * unspecified. Unknown properties are stripped, or rejected when the parser
+ * receives `onExcessProperty: "error"`. `Struct({})` instead accepts every
+ * non-nullish value unchanged, matching TypeScript's `{}` type.
  *
  * **Example** (Defining a basic struct)
  *
@@ -3767,6 +3773,11 @@ export interface $Record<Key extends Record.Key, Value extends Constraint> exten
  *
  * **Details**
  *
+ * Runtime `propertyOrder: "original"` retains input key order on decoding and
+ * encoding. Keys created by transformations are appended in output order.
+ * Runtime `onExcessProperty: "error"` rejects own keys not selected by the key
+ * schema. The default `"ignore"` strips them.
+ *
  * For dynamic keys, the key schema selects matching own properties and the
  * value schema decodes or encodes only those selected properties. Checks on
  * string, number, symbol, and template literal key schemas narrow which
@@ -3988,6 +3999,11 @@ export interface StructWithRest<
 /**
  * Extends a struct schema with one or more record (index-signature) schemas,
  * producing a schema whose decoded type intersects the struct and all records.
+ *
+ * **Details**
+ *
+ * A key is excess only when neither a fixed field nor any index signature covers it.
+ * Every applicable index signature validates its value, including fixed fields.
  *
  * **Gotchas**
  *
@@ -4708,7 +4724,7 @@ function makeUnion<Members extends ReadonlyArray<Constraint>>(
     ): Union<Simplify<Readonly<To>>> {
       const members = f(this.members)
       return makeUnion(
-        SchemaAST.union(members, this.ast.mode, options?.unsafePreserveChecks ? this.ast.checks : undefined),
+        SchemaAST.union(members, this.ast.options, options?.unsafePreserveChecks ? this.ast.checks : undefined),
         members
       )
     }
@@ -4740,9 +4756,9 @@ function makeUnion<Members extends ReadonlyArray<Constraint>>(
  */
 export function Union<const Members extends ReadonlyArray<Constraint>>(
   members: Members,
-  options?: { mode?: "anyOf" | "oneOf" }
+  options?: SchemaAST.UnionOptions
 ): Union<Members> {
-  return makeUnion(SchemaAST.union(members, options?.mode ?? "anyOf", undefined), members)
+  return makeUnion(SchemaAST.union(members, options, undefined), members)
 }
 /**
  * Type-level representation returned by {@link Literals}.
@@ -4784,7 +4800,7 @@ export interface Literals<L extends ReadonlyArray<SchemaAST.LiteralValue>>
  */
 export function Literals<const L extends ReadonlyArray<SchemaAST.LiteralValue>>(literals: L): Literals<L> {
   const members = literals.map(Literal) as { readonly [K in keyof L]: Literal<L[K]> }
-  return make(SchemaAST.union(members, "anyOf", undefined), {
+  return make(SchemaAST.union(members, undefined, undefined), {
     literals,
     members,
     mapMembers<To extends ReadonlyArray<Constraint>>(
@@ -13660,9 +13676,12 @@ export interface ToJsonSchemaOptions extends SchemaRepresentation.ToRepresentati
    * **Details**
    *
    * Possible values include:
-   * - `false`: Disallow additional properties (default)
+   * - `false`: Disallow additional properties
    * - `true`: Allow additional properties
    * - `JsonSchema`: Use the provided JSON Schema for additional properties
+   *
+   * By default the keyword is omitted for objects without index signatures.
+   * This override affects only generated JSON Schema, not codec parsing.
    */
   readonly additionalProperties?: boolean | JsonSchema.JsonSchema | undefined
   /**
@@ -13729,23 +13748,22 @@ export interface ToJsonSchemaOptions extends SchemaRepresentation.ToRepresentati
  * encoded ASTs. By default, anonymous non-recursive candidates remain inline, while candidates with resolved identifiers
  * become definitions. Declarations are lowered through their `toCodecJson` or `toCodec`
  * annotation when available before the representation document is compiled.
- * For schemas whose codec JSON AST can be represented exactly in JSON Schema,
- * importing the emitted document reconstructs a schema that accepts the same
- * JSON values. This is a semantic round-trip guarantee; the reconstructed AST
- * may have a different shape.
+ * Objects without index signatures omit `additionalProperties` by default.
+ * Explicit index value constraints remain in the generated document. Runtime
+ * `onExcessProperty: "error"` does not change JSON Schema generation.
  *
  * **Gotchas**
  *
  * JSON Schema generation is best-effort. Some Effect schema semantics cannot
  * be represented exactly in JSON Schema, and importing an emitted JSON Schema
- * may produce an equivalent approximation rather than the original schema
- * shape. Such schemas are outside the exact round-trip subset. When canonical
+ * may produce an approximation rather than the original schema shape. When canonical
  * JSON derivation adds an artificial transformation, checks and annotations on
  * its source node are not copied to the JSON target, so they do not appear in
  * the emitted document. Opaque declarations without a structural codec are
- * represented by an unconstrained JSON Schema. Effect decoding may discard
- * excess object properties by default; use `onExcessProperty: "error"` when
- * comparing validation semantics with an emitted JSON Schema.
+ * represented by an unconstrained JSON Schema. Validate incoming JSON against
+ * the document before decoding it with `toCodecJson`. The codec may strip
+ * properties that JSON Schema accepts. Import/export is not a lossless semantic
+ * round trip, particularly for closed objects and unions containing them.
  *
  * @see {@link SchemaRepresentation.toJsonSchemaDocument} for compiling an existing live representation document
  *

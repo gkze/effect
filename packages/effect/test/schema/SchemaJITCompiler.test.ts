@@ -170,10 +170,13 @@ describe("SchemaJITCompiler", () => {
   at ["value"]`
       )
     })
-    deepStrictEqual(
-      decode({ value: "a", extra: true }, { onExcessProperty: "preserve" }),
-      { value: "a", extra: true } as any
-    )
+    throws(() => decode({ value: "a", extra: true }, { onExcessProperty: "error" }), (error) => {
+      assertSchemaIssueError(
+        error,
+        `Expected no excess property
+  at ["extra"]`
+      )
+    })
   })
 
   it("does not construct the interpreter for transformations or middleware", () => {
@@ -316,25 +319,22 @@ describe("SchemaJITCompiler", () => {
   })
 
   it("honors explicit ParseOptions in the compiled diagnostic phase", () => {
-    assert.deepStrictEqual(
-      decode(
-        {
-          name: "a",
-          count: 1,
-          active: true,
-          nested: { value: "b", nestedExtra: true },
-          extra: true
-        },
-        { onExcessProperty: "preserve" }
-      ),
-      {
+    throws(() =>
+      decode({
         name: "a",
         count: 1,
         active: true,
         nested: { value: "b", nestedExtra: true },
         extra: true
-      } as any
-    )
+      }, { onExcessProperty: "error", errors: "all" }), (error) => {
+      assertSchemaIssueError(
+        error,
+        `Expected no excess property
+  at ["extra"]
+Expected no excess property
+  at ["nested"]["nestedExtra"]`
+      )
+    })
   })
 
   it("compiles symbol-keyed Struct properties", () => {

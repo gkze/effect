@@ -470,9 +470,9 @@ export type Encoding = readonly [Link, ...Array<Link>]
  * - `errors` — `"first"` (default) stops at the first error; `"all"` collects
  *   every error.
  * - `onExcessProperty` — `"ignore"` (default) strips unknown object keys;
- *   `"error"` fails; `"preserve"` keeps them.
- * - `propertyOrder` — `"none"` (default) lets the system choose key order;
- *   `"original"` preserves input key order.
+ *   `"error"` fails.
+ * - `propertyOrder` — `"none"` (default) leaves key order unspecified;
+ *   `"original"` preserves input key order, including nested objects.
  * - `disableChecks` — skips validation checks while still applying defaults and
  *   transformations.
  * - `reportInput` — includes rejected input values in value-bearing schema
@@ -501,31 +501,29 @@ export interface ParseOptions {
    * **Details**
    *
    * The default, `"ignore"`, strips unspecified properties from the output. Use
-   * `"error"` to fail when an excess property is present, or `"preserve"` to
-   * keep excess properties in the output.
+   * `"error"` to fail when an excess property is present. A key is covered by a
+   * declared property or any index signature selecting that key. This applies
+   * to structs, records, and structs with rest. Values must satisfy every
+   * applicable index signature. Empty structs keep their non-nullish behavior.
    *
    * @default "ignore"
    */
-  readonly onExcessProperty?: "ignore" | "error" | "preserve" | undefined
+  readonly onExcessProperty?: "ignore" | "error" | undefined
 
   /**
-   * The `propertyOrder` option provides control over the order of object fields
-   * in the output. This feature is useful when the sequence of keys is
-   * important for the consuming processes or when maintaining the input order
-   * enhances readability and usability.
+   * Controls the order of object fields in the output, including nested objects.
    *
    * **Details**
    *
-   * By default, the `propertyOrder` option is set to `"none"`. This means that
-   * the internal system decides the order of keys to optimize parsing speed.
-   *
-   * Setting `propertyOrder` to `"original"` ensures that the keys are ordered
-   * as they appear in the input during the decoding/encoding process.
+   * The default, `"none"`, lets the parser choose key order. `"original"`
+   * retains input key order and appends newly created keys in output order.
+   * This applies to decoding, encoding, and the values passed to checks.
+   * JavaScript's ordering rules for integer and symbol keys still apply.
    *
    * **Gotchas**
    *
-   * The key order for `"none"` should not be considered stable and may change
-   * in future updates without notice.
+   * The order produced by `"none"` is not stable and may change in future
+   * updates without notice.
    *
    * @default "none"
    */
@@ -1351,7 +1349,7 @@ export const Enum: new(
       const coercions = Object.fromEntries(this.enums.map(([_, v]) => [globalThis.String(v), v]))
       return replaceEncoding(this, [
         new Link(
-          new Union(Object.keys(coercions).map((k) => new Literal(k)), "anyOf"),
+          new Union(Object.keys(coercions).map((k) => new Literal(k))),
           new SchemaTransformation.Transformation(
             SchemaGetter.transform((s) => coercions[s]),
             SchemaGetter.String()
@@ -2795,37 +2793,34 @@ export const Objects: new(
       }
       const errorsAllOption = options.errors === "all"
       const onExcessPropertyError = options.onExcessProperty === "error"
-      const onExcessPropertyPreserve = options.onExcessProperty === "preserve"
 
       // ---------------------------------------------
       // handle excess properties
       // ---------------------------------------------
       let inputKeys: Array<PropertyKey> | undefined
-      if (!indexCount && (onExcessPropertyError || onExcessPropertyPreserve)) {
+      const indexKeys = indexCount && onExcessPropertyError
+        ? ast.indexSignatures.map((index) => getIndexSignatureKeys(record, index.parameter, options))
+        : undefined
+      if (onExcessPropertyError) {
         expectedKeysSet ??= new Set(expectedKeys)
         inputKeys = Reflect.ownKeys(record)
         for (let i = 0; i < inputKeys.length; i++) {
           const key = inputKeys[i]
-          if (!expectedKeysSet.has(key)) {
+          if (!expectedKeysSet.has(key) && !indexKeys?.some((keys) => keys.includes(key))) {
             // key is unexpected
-            if (onExcessPropertyError) {
-              const unexpected = new SchemaIssue.UnexpectedKey(ast, record[key], options)
-              const issue = new SchemaIssue.Pointer([key], unexpected)
-              if (errorsAllOption) {
-                if (state.issues) {
-                  state.issues.push(issue)
-                } else {
-                  state.issues = [issue]
-                }
-                continue
+            const unexpected = new SchemaIssue.UnexpectedKey(ast, record[key], options)
+            const issue = new SchemaIssue.Pointer([key], unexpected)
+            if (errorsAllOption) {
+              if (state.issues) {
+                state.issues.push(issue)
               } else {
-                return yield* Effect.fail(
-                  new SchemaIssue.Composite(ast, [issue], input, options)
-                )
+                state.issues = [issue]
               }
+              continue
             } else {
-              // preserve key
-              InternalRecord.assignProperty(out, key, record[key])
+              return yield* Effect.fail(
+                new SchemaIssue.Composite(ast, [issue], input, options)
+              )
             }
           }
         }
@@ -2846,9 +2841,9 @@ export const Objects: new(
         for (let i = 0; i < indexCount; i++) {
           const index = indexes![i]
           const parse = index.is.parameter === string ? parseStringIndex : parseIndex
-          const keys = index.is.parameter === string
+          const keys = indexKeys?.[i] ?? (index.is.parameter === string
             ? Object.keys(record)
-            : getIndexSignatureKeys(record, index.is.parameter, options)
+            : getIndexSignatureKeys(record, index.is.parameter, options))
           for (let j = 0; j < keys.length; j++) {
             const eff = parse(state, keys[j], index)
             if (!effectIsExit(eff)) yield* eff
@@ -2864,7 +2859,7 @@ export const Objects: new(
       }
       if (options.propertyOrder === "original") {
         // preserve input keys order
-        const keys = (inputKeys ?? Reflect.ownKeys(record)).concat(expectedKeys)
+        const keys = (inputKeys ?? Reflect.ownKeys(record)).concat(Reflect.ownKeys(out))
         const preserved: Record<PropertyKey, unknown> = {}
         for (const key of keys) {
           if (Object.hasOwn(out, key)) {
@@ -3007,10 +3002,10 @@ export function tuple<Elements extends Schema.Tuple.Elements>(
 /** @internal */
 export function union<Members extends ReadonlyArray<{ readonly ast: AST }>>(
   members: Members,
-  mode: "anyOf" | "oneOf",
+  options: UnionOptions | undefined,
   checks: Checks | undefined
 ): Union<Members[number]["ast"]> {
-  return new Union(members.map(getAST), mode, undefined, checks)
+  return new Union(members.map(getAST), options, undefined, checks)
 }
 
 /** @internal */
@@ -3365,7 +3360,7 @@ export function getCandidates(
  * **Details**
  *
  * - `types` — the member AST nodes.
- * - `mode` — `"anyOf"` succeeds on the first match (like TypeScript unions);
+ * - `options.mode` — `"anyOf"` succeeds on the first match (like TypeScript unions);
  *   `"oneOf"` requires exactly one member to match (fails if multiple do).
  *
  * During parsing, members are tried in order. An internal candidate index
@@ -3381,7 +3376,7 @@ export function getCandidates(
  * const ast = schema.ast
  *
  * if (SchemaAST.isUnion(ast)) {
- *   [ast.types.length, ast.mode] // => [2, "anyOf"]
+ *   [ast.types.length, ast.options?.mode ?? "anyOf"] // => [2, "anyOf"]
  * }
  * ```
  *
@@ -3392,7 +3387,7 @@ export function getCandidates(
 export interface Union<A extends AST = AST> extends ASTNode {
   readonly _tag: "Union"
   readonly types: ReadonlyArray<A>
-  readonly mode: "anyOf" | "oneOf"
+  readonly options: UnionOptions | undefined
   readonly encodingChecks: Checks | undefined
   /** @internal */
 
@@ -3412,6 +3407,17 @@ export interface Union<A extends AST = AST> extends ASTNode {
 }
 
 /**
+ * Local union matching options. Treat them as immutable after AST construction.
+ *
+ * @category options
+ * @since 4.0.0
+ */
+export interface UnionOptions {
+  /** Defaults to `"anyOf"`; `"oneOf"` requires exactly one matching member. */
+  readonly mode?: "anyOf" | "oneOf" | undefined
+}
+
+/**
  * Constructs a {@link Union}.
  *
  * @category constructors
@@ -3419,7 +3425,7 @@ export interface Union<A extends AST = AST> extends ASTNode {
  */
 export const Union: new<A extends AST = AST>(
   types: ReadonlyArray<A>,
-  mode: "anyOf" | "oneOf",
+  options?: UnionOptions,
   annotations?: Schema.Annotations.Annotations,
   checks?: Checks,
   encoding?: Encoding,
@@ -3428,12 +3434,12 @@ export const Union: new<A extends AST = AST>(
 ) => Union<A> = class<A extends AST = AST> extends ASTNodeImpl {
   readonly _tag = "Union"
   readonly types: ReadonlyArray<A>
-  readonly mode: "anyOf" | "oneOf"
+  readonly options: UnionOptions | undefined
   readonly encodingChecks: Checks | undefined
 
   constructor(
     types: ReadonlyArray<A>,
-    mode: "anyOf" | "oneOf",
+    options?: UnionOptions,
     annotations?: Schema.Annotations.Annotations,
     checks?: Checks,
     encoding?: Encoding,
@@ -3442,7 +3448,7 @@ export const Union: new<A extends AST = AST>(
   ) {
     super(annotations, checks, encoding, context)
     this.types = types
-    this.mode = mode
+    this.options = options
     this.encodingChecks = encodingChecks
   }
   /** @internal */
@@ -3475,7 +3481,7 @@ export const Union: new<A extends AST = AST>(
         compile,
         input,
         out: undefined,
-        successes: ast.mode === "oneOf" ? [] : undefined,
+        successes: ast.options?.mode === "oneOf" ? [] : undefined,
         issues: undefined as Arr.NonEmptyArray<SchemaIssue.Issue> | undefined,
         options
       }
@@ -3506,7 +3512,7 @@ export const Union: new<A extends AST = AST>(
     const types = mapOrSame(this.types, recur)
     return types === this.types && checks === this.checks && encodingChecks === this.encodingChecks ?
       this :
-      new Union(types, this.mode, this.annotations, checks, undefined, this.context, encodingChecks)
+      new Union(types, this.options, this.annotations, checks, undefined, this.context, encodingChecks)
   }
   /** @internal */
   recur(recur: (ast: AST) => AST): Union<AST> {
@@ -3614,7 +3620,7 @@ const nonFiniteLiterals = new Union([
   new Literal("Infinity"),
   new Literal("-Infinity"),
   new Literal("NaN")
-], "anyOf")
+])
 
 function formatIsMutable(isMutable: boolean | undefined): string {
   return isMutable ? "" : "readonly "
@@ -3940,7 +3946,7 @@ export function isFinite(annotations?: Schema.Annotations.Filter) {
 export const finite = appendChecks(number, [isFinite()])
 
 const numberToJson = new Link(
-  new Union([finite, nonFiniteLiterals], "anyOf"),
+  new Union([finite, nonFiniteLiterals]),
   new SchemaTransformation.Transformation(
     SchemaGetter.Number(),
     SchemaGetter.transform((n) => globalThis.Number.isFinite(n) ? n : globalThis.String(n))
@@ -4212,7 +4218,7 @@ const optionalKeyLastLink = applyToLastLink(optionalKey)
 
 /** @internal */
 export const optional = memoize(<A extends AST>(ast: A): Union<A | Undefined> =>
-  optionalKey(new Union([ast, undefined_], "anyOf"))
+  optionalKey(new Union([ast, undefined_]))
 )
 
 /** @internal */
@@ -4629,7 +4635,7 @@ const finiteToString = new Link(
 )
 
 const numberToString = new Link(
-  new Union([finiteString, nonFiniteLiterals], "anyOf"),
+  new Union([finiteString, nonFiniteLiterals]),
   SchemaTransformation.numberFromString
 )
 
@@ -4976,7 +4982,7 @@ export const objectKeywordToJson = new Link(
   new Union([
     new Arrays(false, [], [Json]),
     new Objects([], [new IndexSignature(string, Json)])
-  ], "anyOf"),
+  ]),
   SchemaTransformation.passthrough()
 )
 

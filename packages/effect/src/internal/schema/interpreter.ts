@@ -27,15 +27,22 @@ export function compile(
   const parser = descriptor
     ? makeConstructorParser(descriptor, resolve)
     : ast.getParser(resolve, resolveConstructorDefault)
-  const checks = ast.checks
   const links: SchemaAST.Encoding | undefined = constructorDefault
     ? ast.encoding ? [...ast.encoding, constructorDefault] : [constructorDefault]
     : ast.encoding
+  const parseLocal = applyChecks(ast, parser)
+  if (!links) return parseLocal
+  let encodingParser: Parser | undefined
+  return (input, options) =>
+    (encodingParser ??= makeEncoding(ast, links, links.map((link) => resolve(link.to)), parseLocal))(input, options)
+}
+
+/** @internal */
+export function applyChecks(ast: SchemaAST.AST, parser: Parser): Parser {
+  const checks = ast.checks
   const encodingChecks = (ast as any).encodingChecks
-  if (!links && !checks && !encodingChecks) {
-    return parser
-  }
-  const parseLocal = (
+  if (!checks && !encodingChecks) return parser
+  return (
     input: unknown,
     options: SchemaAST.ParseOptions
   ) => {
@@ -83,10 +90,4 @@ export function compile(
     }
     return result
   }
-  if (!links) {
-    return parseLocal
-  }
-  let encodingParser: Parser | undefined
-  return (input, options) =>
-    (encodingParser ??= makeEncoding(ast, links, links.map((link) => resolve(link.to)), parseLocal))(input, options)
 }

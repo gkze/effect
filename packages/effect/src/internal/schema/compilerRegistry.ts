@@ -27,8 +27,8 @@ export interface Decode {
 
 /** @internal */
 export interface CompiledDecoder {
-  readonly is?: Is
-  readonly validate?: Validate
+  readonly is?: Is | undefined
+  readonly validate?: Validate | undefined
   readonly decode: Decode
 }
 
@@ -44,8 +44,8 @@ export interface OptimizedValidate extends Validate {
 
 /** @internal */
 export interface OptimizedCompiledDecoder {
-  readonly is?: OptimizedIs
-  readonly validate?: OptimizedValidate
+  readonly is?: OptimizedIs | undefined
+  readonly validate?: OptimizedValidate | undefined
   readonly decode: Decode
 }
 
@@ -79,7 +79,48 @@ type CompiledParser = Parser & {
 export const getCompiledDecoder = (parser: Parser): OptimizedCompiledDecoder | undefined =>
   (parser as Partial<CompiledParser>)[CompiledDecoderTypeId]
 
-const makeDirectParser = (compiled: OptimizedCompiledDecoder): Parser => {
+/** @internal */
+export const prepareIs = (
+  parser: Parser,
+  options: SchemaAST.ParseOptions
+): ((input: unknown) => boolean) | undefined => {
+  const compiled = getCompiledDecoder(parser)
+  const is = compiled?.is
+  if (is !== undefined) {
+    return options === SchemaAST.defaultParseOptions ? is.default : (input) => is(input, options)
+  }
+  const validate = compiled?.validate
+  if (validate !== undefined) {
+    return options === SchemaAST.defaultParseOptions
+      ? (input) => validate.default(input) !== invalid
+      : (input) => validate(input, options) !== invalid
+  }
+}
+
+/** @internal */
+export class PreparedSyncDecoder {
+  readonly validate: ((input: unknown) => unknown | typeof invalid) | undefined
+  readonly compiled: OptimizedCompiledDecoder
+
+  constructor(compiled: OptimizedCompiledDecoder) {
+    this.compiled = compiled
+    this.validate = compiled.validate?.default
+  }
+
+  get decode(): Parser {
+    return this.compiled.decode
+  }
+}
+
+/** @internal */
+export const prepareSync = (parser: Parser): PreparedSyncDecoder | undefined => {
+  const compiled = getCompiledDecoder(parser)
+  if (compiled === undefined) return undefined
+  return new PreparedSyncDecoder(compiled)
+}
+
+/** @internal */
+export const prepareDecode = (compiled: OptimizedCompiledDecoder): Parser => {
   const validate = compiled.validate
   if (validate === undefined) return compiled.decode
   return (input, options) => {
@@ -101,7 +142,7 @@ const makeDirectParser = (compiled: OptimizedCompiledDecoder): Parser => {
 
 const makeCompiledParser = (compiled: OptimizedCompiledDecoder): CompiledParser => {
   let direct: Parser | undefined
-  const getDirect = (): Parser => direct ??= makeDirectParser(compiled)
+  const getDirect = (): Parser => direct ??= prepareDecode(compiled)
   const parser: Parser = (input, options) => getDirect()(input, options)
   return Object.assign(parser, {
     [CompiledDecoderTypeId]: compiled,
@@ -135,15 +176,29 @@ const optimizeValidate = (validate: Validate): OptimizedValidate => {
     : validate as OptimizedValidate
 }
 
-const optimize = (compiled: CompiledDecoder): OptimizedCompiledDecoder => {
-  const out: {
-    is?: OptimizedIs
-    validate?: OptimizedValidate
-    decode: Decode
-  } = { decode: compiled.decode }
-  if (compiled.is !== undefined) out.is = optimizeIs(compiled.is)
-  if (compiled.validate !== undefined) out.validate = optimizeValidate(compiled.validate)
-  return out
+class NormalizedDecoder implements OptimizedCompiledDecoder {
+  readonly compiled: CompiledDecoder
+
+  constructor(compiled: CompiledDecoder) {
+    this.compiled = compiled
+  }
+  get is() {
+    const operation = this.compiled.is
+    const is = operation === undefined ? undefined : optimizeIs(operation)
+    Object.defineProperty(this, "is", { value: is })
+    return is
+  }
+  get validate() {
+    const operation = this.compiled.validate
+    const validate = operation === undefined ? undefined : optimizeValidate(operation)
+    Object.defineProperty(this, "validate", { value: validate })
+    return validate
+  }
+  get decode() {
+    const decode = this.compiled.decode
+    Object.defineProperty(this, "decode", { value: decode })
+    return decode
+  }
 }
 
 const setOptimized = (ast: SchemaAST.AST, compiled: OptimizedCompiledDecoder): Parser => {
@@ -153,7 +208,8 @@ const setOptimized = (ast: SchemaAST.AST, compiled: OptimizedCompiledDecoder): P
 }
 
 /** @internal */
-export const set = (ast: SchemaAST.AST, compiled: CompiledDecoder): Parser => setOptimized(ast, optimize(compiled))
+export const set = (ast: SchemaAST.AST, compiled: CompiledDecoder): Parser =>
+  setOptimized(ast, new NormalizedDecoder(compiled))
 
 let installedCompiler: Compiler | undefined
 
@@ -167,7 +223,7 @@ export const resolve: ResolveParser = (ast) => {
   const cached = cache.get(ast)
   if (cached !== undefined) return cached
   const compiled = installedCompiler?.(ast, resolve)
-  if (compiled !== undefined) return setOptimized(ast, compiled)
+  if (compiled !== undefined) return set(ast, compiled)
   const parser = compileInterpreted(ast, resolve)
   cache.set(ast, parser)
   return parser
@@ -194,7 +250,7 @@ export const makeScopedCompiler = (compiler: Compiler): (ast: SchemaAST.AST) => 
     try {
       const compiled = compiler(ast, resolveScoped)
       if (compiled !== undefined) {
-        parser = setOptimized(ast, compiled)
+        parser = set(ast, compiled)
         return parser
       }
       if (cached !== undefined && getCompiledDecoder(cached) !== undefined) {

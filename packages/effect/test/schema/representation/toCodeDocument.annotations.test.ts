@@ -26,7 +26,7 @@ const NumberRepresentation: SchemaRepresentation.Representation = {
 const EmptyUnionRepresentation: SchemaRepresentation.Representation = {
   _tag: "Union",
   types: [],
-  mode: "anyOf",
+  options: { mode: "anyOf" },
   checks: []
 }
 
@@ -455,7 +455,7 @@ describe("SchemaRepresentation.toCodeDocument annotations", () => {
           checks: [{ _tag: "FilterGroup", checks: [filter] }]
         },
         E: { _tag: "TemplateLiteral", parts: [reference("D")], checks: [] },
-        F: { _tag: "Union", types: [reference("E"), reference("A")], mode: "anyOf", checks: [] },
+        F: { _tag: "Union", types: [reference("E"), reference("A")], options: { mode: "anyOf" }, checks: [] },
         G: {
           _tag: "Arrays",
           elements: [{ type: reference("F"), isOptional: false }],
@@ -532,7 +532,7 @@ describe("SchemaRepresentation.toCodeDocument annotations", () => {
       representations: [{
         _tag: "Union",
         types: [{ _tag: "Literal", literal: "a", checks: [] }],
-        mode: "anyOf",
+        options: { mode: "anyOf" },
         checks: []
       }],
       references: {}

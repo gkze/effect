@@ -145,7 +145,6 @@ describe("SchemaRepresentation.toRepresentation", () => {
             { _tag: "String", checks: [] },
             { _tag: "BigInt", checks: [] }
           ],
-          mode: "anyOf",
           checks: []
         },
         references: {}

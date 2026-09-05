@@ -42,6 +42,13 @@ export interface Is {
  * A compiled validator that returns the decoded value without constructing
  * diagnostic issues.
  *
+ * **Details**
+ *
+ * It must honor every supported `ParseOptions` value. Return {@link invalid}
+ * only for invalid input, never for an unsupported optimization. Do not call
+ * the detailed decoder and discard its failure: the caller runs `decode` after
+ * `invalid`. User checks may themselves construct issues.
+ *
  * @category models
  * @since 4.0.0
  */
@@ -74,8 +81,8 @@ export interface Decode {
  * @since 4.0.0
  */
 export interface CompiledDecoder {
-  readonly is?: Is
-  readonly validate?: Validate
+  readonly is?: Is | undefined
+  readonly validate?: Validate | undefined
   readonly decode: Decode
 }
 
@@ -88,6 +95,10 @@ export interface CompiledDecoder {
  * A later call for the same AST replaces the previous entry. Parser functions
  * that have already resolved and retained an earlier entry are not updated.
  * The decoder is trusted to implement the semantics of the supplied AST.
+ * Installation does not evaluate operation getters. Each operation, including
+ * an absent optional operation, is resolved once when first needed. Accessors
+ * retain the supplied decoder as their receiver. The supplied object is not
+ * mutated. JIT installation uses these same rules.
  *
  * @category registry
  * @since 4.0.0

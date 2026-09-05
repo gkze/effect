@@ -2113,7 +2113,7 @@ function resolveSuspend(ast: SchemaAST.AST): SchemaAST.AST {
 function enumsToLiterals(ast: SchemaAST.Enum): SchemaAST.Union<SchemaAST.Literal> {
   return new SchemaAST.Union(
     ast.enums.map((e) => new SchemaAST.Literal(e[1], { title: e[0] })),
-    "anyOf"
+    undefined
   )
 }
 
@@ -2659,7 +2659,7 @@ function isExact(root: SchemaAST.AST): boolean {
             signature.parameter._tag === "String" && exact(signature.parameter) && exact(signature.type)
           )
       case "Union":
-        return ast.mode === "anyOf" && ast.types.every(exact)
+        return ast.options?.mode !== "oneOf" && ast.types.every(exact)
       // The layout compiles straight through a suspend, so the binary layer
       // validates whatever the thunk returns. Only decoding gets to act on
       // this: encoding a recursive schema still needs the cycle walk, which is

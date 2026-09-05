@@ -115,7 +115,17 @@ describe("toJsonSchemaDocument", () => {
     })
 
     describe("additionalProperties", () => {
-      it(`false (default)`, () => {
+      it("omits the keyword by default", () => {
+        assertJsonSchemaDocument(Schema.Struct({ a: Schema.String }), {
+          schema: {
+            type: "object",
+            properties: { a: { type: "string" } },
+            required: ["a"]
+          }
+        })
+      })
+
+      it(`false (explicit override)`, () => {
         const schema = Schema.Struct({ a: Schema.String })
 
         assertJsonSchemaDocument(schema, {
@@ -278,8 +288,7 @@ describe("toJsonSchemaDocument", () => {
                   "defaultSnippets": [{ label: "v1", body: "v1" }]
                 }
               },
-              "required": ["name", "tag"],
-              "additionalProperties": false
+              "required": ["name", "tag"]
             }
           },
           { includeAnnotationKey: (key) => key === "markdownDescription" || key === "defaultSnippets" }
@@ -457,8 +466,7 @@ describe("toJsonSchemaDocument", () => {
           "required": [
             "a",
             "b"
-          ],
-          "additionalProperties": false
+          ]
         },
         definitions: {
           "X": {
@@ -506,8 +514,7 @@ describe("toJsonSchemaDocument", () => {
             "stack": { "type": "string" },
             "cause": {}
           },
-          "required": ["message"],
-          "additionalProperties": false
+          "required": ["message"]
         }
       })
     })
@@ -521,8 +528,7 @@ describe("toJsonSchemaDocument", () => {
             "source": { "type": "string" },
             "flags": { "type": "string" }
           },
-          "required": ["source", "flags"],
-          "additionalProperties": false
+          "required": ["source", "flags"]
         }
       })
     })
@@ -551,8 +557,7 @@ describe("toJsonSchemaDocument", () => {
                   "enum": ["Infinity"]
                 }
               },
-              "required": ["_tag"],
-              "additionalProperties": false
+              "required": ["_tag"]
             },
             {
               "type": "object",
@@ -562,8 +567,7 @@ describe("toJsonSchemaDocument", () => {
                   "enum": ["NegativeInfinity"]
                 }
               },
-              "required": ["_tag"],
-              "additionalProperties": false
+              "required": ["_tag"]
             },
             {
               "type": "object",
@@ -577,8 +581,7 @@ describe("toJsonSchemaDocument", () => {
                   "pattern": "^-?\\d+$"
                 }
               },
-              "required": ["_tag", "value"],
-              "additionalProperties": false
+              "required": ["_tag", "value"]
             },
             {
               "type": "object",
@@ -591,8 +594,7 @@ describe("toJsonSchemaDocument", () => {
                   "type": "integer"
                 }
               },
-              "required": ["_tag", "value"],
-              "additionalProperties": false
+              "required": ["_tag", "value"]
             }
           ]
         }
@@ -615,8 +617,7 @@ describe("toJsonSchemaDocument", () => {
                   "type": "string"
                 }
               },
-              "required": ["_tag", "value"],
-              "additionalProperties": false
+              "required": ["_tag", "value"]
             },
             {
               "type": "object",
@@ -626,8 +627,7 @@ describe("toJsonSchemaDocument", () => {
                   "enum": ["None"]
                 }
               },
-              "required": ["_tag"],
-              "additionalProperties": false
+              "required": ["_tag"]
             }
           ]
         }
@@ -1342,8 +1342,7 @@ describe("toJsonSchemaDocument", () => {
                 allOf: [{ description: "the field" }]
               }
             },
-            required: ["value"],
-            additionalProperties: false
+            required: ["value"]
           }
         }
       )
@@ -2242,8 +2241,7 @@ describe("toJsonSchemaDocument", () => {
                   "type": "string"
                 }
               },
-              "required": ["a"],
-              "additionalProperties": false
+              "required": ["a"]
             }
           }
         )
@@ -2263,8 +2261,7 @@ describe("toJsonSchemaDocument", () => {
                   "description": "a"
                 }
               },
-              "required": ["a"],
-              "additionalProperties": false
+              "required": ["a"]
             }
           }
         )
@@ -2286,8 +2283,7 @@ describe("toJsonSchemaDocument", () => {
                   }]
                 }
               },
-              "required": ["a"],
-              "additionalProperties": false
+              "required": ["a"]
             }
           }
         )
@@ -2310,8 +2306,7 @@ describe("toJsonSchemaDocument", () => {
                   }]
                 }
               },
-              "required": ["a"],
-              "additionalProperties": false
+              "required": ["a"]
             }
           }
         )
@@ -2329,8 +2324,7 @@ describe("toJsonSchemaDocument", () => {
               "type": "object",
               "properties": {
                 "a": { "type": "string" }
-              },
-              "additionalProperties": false
+              }
             }
           }
         )
@@ -2354,8 +2348,7 @@ describe("toJsonSchemaDocument", () => {
                   "type": "string",
                   "description": "b"
                 }
-              },
-              "additionalProperties": false
+              }
             }
           }
         )
@@ -2383,8 +2376,7 @@ describe("toJsonSchemaDocument", () => {
                     "description": "b-key"
                   }]
                 }
-              },
-              "additionalProperties": false
+              }
             }
           }
         )
@@ -2423,8 +2415,7 @@ describe("toJsonSchemaDocument", () => {
                     "description": "c-outer-key"
                   }]
                 }
-              },
-              "additionalProperties": false
+              }
             }
           }
         )
@@ -2446,8 +2437,7 @@ describe("toJsonSchemaDocument", () => {
                   "type": "string"
                 }
               },
-              "required": ["a"],
-              "additionalProperties": false
+              "required": ["a"]
             }
           }
         )
@@ -2470,8 +2460,7 @@ describe("toJsonSchemaDocument", () => {
                     { "type": "null" }
                   ]
                 }
-              },
-              "additionalProperties": false
+              }
             }
           }
         )
@@ -2500,8 +2489,7 @@ describe("toJsonSchemaDocument", () => {
                   ],
                   "description": "b"
                 }
-              },
-              "additionalProperties": false
+              }
             }
           }
         )
@@ -2535,8 +2523,7 @@ describe("toJsonSchemaDocument", () => {
                     "description": "b-key"
                   }]
                 }
-              },
-              "additionalProperties": false
+              }
             }
           }
         )
@@ -2558,8 +2545,7 @@ describe("toJsonSchemaDocument", () => {
                   "type": "string"
                 }
               },
-              "required": ["a"],
-              "additionalProperties": false
+              "required": ["a"]
             }
           }
         )
@@ -2583,8 +2569,7 @@ describe("toJsonSchemaDocument", () => {
                   ]
                 }
               },
-              "required": ["a"],
-              "additionalProperties": false
+              "required": ["a"]
             }
           }
         )
@@ -2614,8 +2599,7 @@ describe("toJsonSchemaDocument", () => {
                   "description": "b"
                 }
               },
-              "required": ["a", "b"],
-              "additionalProperties": false
+              "required": ["a", "b"]
             }
           }
         )
@@ -2650,8 +2634,7 @@ describe("toJsonSchemaDocument", () => {
                   }]
                 }
               },
-              "required": ["a", "b"],
-              "additionalProperties": false
+              "required": ["a", "b"]
             }
           }
         )
@@ -2673,8 +2656,7 @@ describe("toJsonSchemaDocument", () => {
                   "type": "string"
                 }
               },
-              "required": ["a"],
-              "additionalProperties": false
+              "required": ["a"]
             }
           }
         )
@@ -2773,8 +2755,7 @@ describe("toJsonSchemaDocument", () => {
               "a": { "type": "number" },
               "b": { "type": "number" }
             },
-            "required": ["a", "b"],
-            "additionalProperties": false
+            "required": ["a", "b"]
           }
         }
       )
@@ -3382,8 +3363,7 @@ describe("toJsonSchemaDocument", () => {
               "operator",
               "left",
               "right"
-            ],
-            "additionalProperties": false
+            ]
           },
           Expression: {
             "type": "object",
@@ -3408,8 +3388,7 @@ describe("toJsonSchemaDocument", () => {
             "required": [
               "type",
               "value"
-            ],
-            "additionalProperties": false
+            ]
           }
         }
       }
@@ -3449,8 +3428,7 @@ describe("toJsonSchemaDocument", () => {
               "operator",
               "left",
               "right"
-            ],
-            "additionalProperties": false
+            ]
           },
           Expression: {
             "type": "object",
@@ -3475,8 +3453,7 @@ describe("toJsonSchemaDocument", () => {
             "required": [
               "type",
               "value"
-            ],
-            "additionalProperties": false
+            ]
           }
         }
       }
@@ -3558,8 +3535,7 @@ describe("toJsonSchemaDocument", () => {
             "properties": {
               "a": { "type": "string" }
             },
-            "required": ["a"],
-            "additionalProperties": false
+            "required": ["a"]
           }
         }
       },
@@ -3581,8 +3557,7 @@ describe("toJsonSchemaDocument", () => {
           "properties": {
             "a": { "type": "string" }
           },
-          "required": ["a"],
-          "additionalProperties": false
+          "required": ["a"]
         }
       }
     })

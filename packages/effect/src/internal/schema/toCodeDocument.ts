@@ -558,7 +558,7 @@ export function toCodeDocument(
       }
       case "Union": {
         if (representation.types.length === 0) return makeCode("Schema.Never", "never")
-        if (representation.types.every(isSimpleLiveLiteral)) {
+        if (representation.options?.mode !== "oneOf" && representation.types.every(isSimpleLiveLiteral)) {
           const literals = representation.types.map((literal) => format(literal.literal))
           return literals.length === 1
             ? makeCode(`Schema.Literal(${literals[0]})`, literals[0])
@@ -567,7 +567,7 @@ export function toCodeDocument(
         const types = representation.types.map((type, index) =>
           recur(type, [...path, "types", index], includeTypeBrands)
         )
-        const mode = representation.mode === "anyOf" ? "" : `, { mode: "oneOf" }`
+        const mode = representation.options?.mode !== "oneOf" ? "" : `, { mode: "oneOf" }`
         return makeCode(
           `Schema.Union([${types.map((type) => type.runtime).join(", ")}]${mode})`,
           types.map((type) => type.Type).join(" | ")

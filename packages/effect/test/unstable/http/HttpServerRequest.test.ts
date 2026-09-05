@@ -1,6 +1,6 @@
 import { assert, describe, it } from "@effect/vitest"
 import { assertNone, assertSome, deepStrictEqual, strictEqual } from "@effect/vitest/utils"
-import { Effect, Schema, Stream } from "effect"
+import { Effect, Result, Schema, Stream } from "effect"
 import * as Option from "effect/Option"
 import { HttpBody, HttpClientRequest, HttpServerRequest } from "effect/unstable/http"
 
@@ -199,17 +199,29 @@ describe("HttpServerRequest", () => {
       })
 
       const decoded = yield* HttpServerRequest.schemaBodyJson(schema, {
-        onExcessProperty: "preserve",
+        onExcessProperty: "ignore",
         reviver: (key, value) => key === "status" ? "revived" : value
       }).pipe(
         Effect.provideService(HttpServerRequest.HttpServerRequest, request)
       )
-      const decodedRecord = decoded as Record<string, unknown>
-
       assert.strictEqual(decoded.status, "revived")
       assert.strictEqual(decoded.name, "svc")
-      assert.strictEqual(decodedRecord.sha, "abc")
-      assert.strictEqual(decodedRecord.version, "1.0.0")
+      assert.isFalse("sha" in decoded)
+      assert.isFalse("version" in decoded)
+
+      const rejected = yield* HttpServerRequest.schemaBodyJson(schema, {
+        onExcessProperty: "error"
+      }).pipe(
+        Effect.provideService(HttpServerRequest.HttpServerRequest, request),
+        Effect.result
+      )
+      assert(Result.isFailure(rejected))
+      assert(Schema.isSchemaError(rejected.failure))
+      assert.strictEqual(
+        rejected.failure.message,
+        `Expected no excess property
+  at ["sha"]`
+      )
     }))
 
   it("remoteAddress defaults to none for web requests", () => {
