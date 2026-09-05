@@ -5430,7 +5430,7 @@ By default, a schema produces a draft-2020-12 JSON Schema.
 Objects without index signatures omit `additionalProperties` by default.
 Explicit index constraints remain: `Record(String, Number)` constrains all
 string-keyed values, and pattern index signatures constrain their matching
-keys. Runtime `onExcessProperty` and AST property order do not affect generation.
+keys. Runtime `onExcessProperty` and `propertyOrder` do not affect generation.
 The existing `additionalProperties` generation override remains available when
 you explicitly want a different JSON Schema policy.
 OpenAI and Anthropic structured-output adapters request closed objects

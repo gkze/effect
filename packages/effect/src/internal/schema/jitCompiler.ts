@@ -149,7 +149,9 @@ const hasExcessProperties = (
   input: Record<PropertyKey, unknown>,
   options: SchemaAST.ParseOptions
 ): boolean => {
-  const covered = new Set<PropertyKey>(ast.propertySignatures.map((property) => property.name))
+  const covered = new Set<PropertyKey>(
+    ast.propertySignatures.map((property) => typeof property.name === "number" ? String(property.name) : property.name)
+  )
   for (const index of ast.indexSignatures) {
     for (const key of SchemaAST.getIndexSignatureKeys(input, index.parameter, options)) covered.add(key)
   }
@@ -313,7 +315,14 @@ const emitIndexes = (
 ): void => {
   const fixedKeys = output === undefined || ast.propertySignatures.length === 0
     ? undefined
-    : constant(emitter, new Set(ast.propertySignatures.map((property) => property.name)))
+    : constant(
+      emitter,
+      new Set(
+        ast.propertySignatures.map((property) =>
+          typeof property.name === "number" ? String(property.name) : property.name
+        )
+      )
+    )
   for (const signature of ast.indexSignatures) {
     const keys = variable(emitter)
     const index = variable(emitter)
@@ -822,8 +831,10 @@ function compileDetailedObjects(ast: SchemaAST.Objects): DetailedDecoder {
     decodeKey: compileDetailed(SchemaAST.parameterFromPropertyKey(signature.parameter)),
     decodeValue: compileDetailed(signature.type)
   }))
-  const expectedKeys = ast.propertySignatures.map((property) => property.name)
-  const expectedKeysSet = new Set(expectedKeys)
+  const expectedKeys = ast.propertySignatures.map((property) =>
+    typeof property.name === "number" ? String(property.name) : property.name
+  )
+  const expectedKeysSet = new Set<PropertyKey>(expectedKeys)
   return (input, options) => {
     if (input === InternalParser.missing) return input
     if (typeof input !== "object" || input === null || Array.isArray(input)) {
@@ -838,9 +849,15 @@ function compileDetailedObjects(ast: SchemaAST.Objects): DetailedDecoder {
       ? indexes.map((index) => SchemaAST.getIndexSignatureKeys(record, index.signature.parameter, options))
       : undefined
     if (options.onExcessProperty === "error") {
+      const coveredKeys = indexKeys ? new Set(expectedKeysSet) : expectedKeysSet
+      if (indexKeys) {
+        for (const keys of indexKeys) {
+          for (const key of keys) coveredKeys.add(key)
+        }
+      }
       inputKeys = Reflect.ownKeys(record)
       for (const key of inputKeys) {
-        if (expectedKeysSet.has(key) || indexKeys?.some((keys) => keys.includes(key))) continue
+        if (coveredKeys.has(key)) continue
         const issue = new SchemaIssue.Pointer(
           [key],
           new SchemaIssue.UnexpectedKey(ast, record[key], options)

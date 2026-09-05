@@ -1984,6 +1984,65 @@
       "name": "schema-compiler",
       "fixtures": [
         {
+          "file": "suites/schema-compiler/fixtures/strict-record.ts",
+          "defaults": {
+            "tier": 2,
+            "family": "strict-record",
+            "operation": "decode-result",
+            "astTags": ["Objects", "String", "Number"]
+          },
+          "cases": [
+            {
+              "name": "strict-record-1024-valid-effect",
+              "export": "valid1024",
+              "scenario": "strict-record-1024-valid",
+              "implementation": "effect",
+              "path": "valid",
+              "size": 1024
+            },
+            {
+              "name": "strict-record-1024-valid-effect-compiled",
+              "export": "valid1024Compiled",
+              "scenario": "strict-record-1024-valid",
+              "implementation": "effect-compiled",
+              "path": "valid",
+              "size": 1024
+            },
+            {
+              "name": "strict-record-4096-valid-effect",
+              "export": "valid4096",
+              "scenario": "strict-record-4096-valid",
+              "implementation": "effect",
+              "path": "valid",
+              "size": 4096
+            },
+            {
+              "name": "strict-record-4096-valid-effect-compiled",
+              "export": "valid4096Compiled",
+              "scenario": "strict-record-4096-valid",
+              "implementation": "effect-compiled",
+              "path": "valid",
+              "size": 4096
+            },
+            {
+              "name": "strict-record-4096-invalid-effect",
+              "export": "invalid4096",
+              "scenario": "strict-record-4096-invalid",
+              "implementation": "effect",
+              "path": "invalid",
+              "size": 4096
+            },
+            {
+              "name": "strict-record-4096-invalid-effect-compiled",
+              "export": "invalid4096Compiled",
+              "scenario": "strict-record-4096-invalid",
+              "implementation": "effect-compiled",
+              "path": "invalid",
+              "size": 4096
+            }
+          ]
+        },
+        {
           "file": "suites/schema-compiler/fixtures/coverage.ts",
           "defaults": {
             "tier": 2,

@@ -2676,7 +2676,7 @@ export const Objects: new(
     const ast = this
     const expectedKeys: Array<PropertyKey> = []
     for (const ps of ast.propertySignatures) {
-      expectedKeys.push(ps.name)
+      expectedKeys.push(typeof ps.name === "number" ? globalThis.String(ps.name) : ps.name)
     }
     const hasProperties = expectedKeys.length
     const indexCount = ast.indexSignatures.length
@@ -2711,7 +2711,10 @@ export const Objects: new(
         ? inputValue
         : (exitValue as InternalParser.Success<unknown, SchemaIssue.Issue>)[InternalParser.args]
       if (k2 !== InternalParser.missing && value !== InternalParser.missing) {
-        if (hasProperties && (expectedKeysSet!.has(key) || expectedKeysSet!.has(k2))) return Exit.void
+        if (
+          hasProperties &&
+          (expectedKeysSet!.has(key) || expectedKeysSet!.has(typeof k2 === "number" ? globalThis.String(k2) : k2))
+        ) return Exit.void
         InternalRecord.assignProperty(s.out, k2, value)
       }
       return Exit.void
@@ -2803,10 +2806,16 @@ export const Objects: new(
         : undefined
       if (onExcessPropertyError) {
         expectedKeysSet ??= new Set(expectedKeys)
+        const coveredKeys = indexKeys ? new Set(expectedKeysSet) : expectedKeysSet
+        if (indexKeys) {
+          for (const keys of indexKeys) {
+            for (const key of keys) coveredKeys.add(key)
+          }
+        }
         inputKeys = Reflect.ownKeys(record)
         for (let i = 0; i < inputKeys.length; i++) {
           const key = inputKeys[i]
-          if (!expectedKeysSet.has(key) && !indexKeys?.some((keys) => keys.includes(key))) {
+          if (!coveredKeys.has(key)) {
             // key is unexpected
             const unexpected = new SchemaIssue.UnexpectedKey(ast, record[key], options)
             const issue = new SchemaIssue.Pointer([key], unexpected)

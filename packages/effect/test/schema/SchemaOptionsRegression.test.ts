@@ -42,6 +42,39 @@ for (const compiled of [false, true]) {
       strictEqual(SchemaParser.is(schema, { onExcessProperty: "error" })({ other: 1 }), true)
     })
 
+    it("recognizes numeric fixed keys with and without index signatures", () => {
+      const symbol = Symbol()
+      for (const key of [Schema.Literal(1), Schema.Union([Schema.Literal(1), Schema.Symbol])]) {
+        const schema = prepare(Schema.Record(key, Schema.String))
+        const options = { onExcessProperty: "error", errors: "all" } as const
+        const input = { 1: "one" }
+        deepStrictEqual(SchemaParser.decodeUnknownSync(schema)(input, options), input)
+        deepStrictEqual(SchemaParser.encodeUnknownSync(schema)(input, options), input)
+        strictEqual(SchemaParser.is(schema, options)(input), true)
+
+        const result = SchemaParser.decodeUnknownResult(schema)({ 1: 1 }, options)
+        assert(Result.isFailure(result))
+        assert(result.failure._tag === "Composite")
+        strictEqual(result.failure.issues.length, 1)
+        const issue = result.failure.issues[0]
+        assert(issue._tag === "Pointer")
+        deepStrictEqual(issue.path, [1])
+        strictEqual(issue.issue._tag, "InvalidType")
+        strictEqual(SchemaParser.is(schema, options)({ ...input, extra: "extra" }), false)
+      }
+      const schema = prepare(Schema.Record(Schema.Union([Schema.Literal(1), Schema.Symbol]), Schema.String))
+      const input = { 1: "one", [symbol]: "symbol" }
+      deepStrictEqual(SchemaParser.decodeUnknownSync(schema)(input, { onExcessProperty: "error" }), input)
+    })
+
+    it("keeps numeric fixed-field output when an index signature also selects the key", () => {
+      const schema = prepare(Schema.StructWithRest(
+        Schema.Record(Schema.Literal(1), Schema.Struct({ a: Schema.String })),
+        [Schema.Record(Schema.String, Schema.Struct({ a: Schema.String, b: Schema.Number }))]
+      ))
+      deepStrictEqual(SchemaParser.decodeUnknownSync(schema)({ 1: { a: "a", b: 1 } }), { 1: { a: "a" } })
+    })
+
     it("propagates runtime order to nested objects and checks", () => {
       const child = Schema.Struct({ a: Schema.String, b: Schema.String })
         .check(Schema.makeFilter((value) => Object.keys(value)[0] === "b"))

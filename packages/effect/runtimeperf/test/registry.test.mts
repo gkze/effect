@@ -211,14 +211,23 @@ describe("runtimeperf registry", () => {
       assert.deepEqual(implementations.sort(), ["effect", "effect-compiled"])
     }
 
-    const interpreted = compiler.find((fixture) => fixture.implementation === "effect")
-    const compiled = compiler.find((fixture) => fixture.implementation === "effect-compiled")
+    const interpreted = compiler.find((fixture) => fixture.name === "record-valid-effect")
+    const compiled = compiler.find((fixture) => fixture.name === "record-valid-effect-compiled")
     const interpretedSource = await readFile(interpreted.fixturePath, "utf8")
     const compiledSource = await readFile(compiled.fixturePath, "utf8")
     assert.match(interpretedSource, /SchemaParser\.decodeUnknownSync\(/)
     assert.doesNotMatch(interpretedSource, /SchemaCompiler/)
     assert.match(compiledSource, /import "effect\/unstable\/schema\/SchemaJITCompiler\/enable"/)
     assert.doesNotMatch(compiledSource, /internal\/schema/)
+
+    const strictRecords = compiler.filter((fixture) => fixture.family === "strict-record")
+    assert.equal(strictRecords.length, 6)
+    assert.deepEqual([...new Set(strictRecords.map((fixture) => fixture.size))], [1024, 4096])
+    const strictRecordSource = await readFile(strictRecords[0].fixturePath, "utf8")
+    assert.match(strictRecordSource, /SchemaParser\.decodeUnknownResult\(/)
+    assert.match(strictRecordSource, /onExcessProperty: "error"/)
+    assert.match(strictRecordSource, /SchemaJITCompiler\.enable\(schema\.ast\)/)
+    assert.doesNotMatch(strictRecordSource, /internal\/schema/)
   })
 
   it("loads, runs and validates every fixture export", async () => {
