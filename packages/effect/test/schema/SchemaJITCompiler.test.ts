@@ -432,7 +432,7 @@ Expected no excess property
     strictEqual(is([1]), false)
   })
 
-  it("returns the canonical signed-zero literal", () => {
+  it("preserves the input sign for signed-zero literals", () => {
     const decode = SchemaParser.decodeUnknownSync(Schema.Struct({
       negative: Schema.Literal(-0),
       positive: Schema.Union([Schema.Literal(0), Schema.Literal(1)]),
@@ -440,9 +440,9 @@ Expected no excess property
     }))
     const output = decode({ negative: 0, positive: -0, union: 0 })
 
-    strictEqual(Object.is(output.negative, -0), true)
-    strictEqual(Object.is(output.positive, 0), true)
-    strictEqual(Object.is(output.union, -0), true)
+    strictEqual(Object.is(output.negative, 0), true)
+    strictEqual(Object.is(output.positive, -0), true)
+    strictEqual(Object.is(output.union, 0), true)
   })
 
   it("compiles primitive anyOf and oneOf unions", () => {

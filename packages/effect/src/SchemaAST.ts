@@ -1634,8 +1634,10 @@ export type LiteralValue = string | number | boolean | bigint
  * **Details**
  *
  * Parsing succeeds only when the input is strictly equal (`===`) to the
- * stored `literal`. Numeric literals must be finite — `Infinity`, `-Infinity`,
- * and `NaN` are rejected at construction time.
+ * stored `literal`, preserving the input value. Both `0` and `-0` are accepted
+ * by either zero literal, and parsing preserves the input's sign. Numeric
+ * literals must be finite — `Infinity`, `-Infinity`, and `NaN` are rejected at
+ * construction time.
  *
  * **Example** (Creating a literal AST)
  *
@@ -4499,7 +4501,7 @@ function fromConst<const T>(
   ast: AST,
   value: T
 ): SchemaParser.Parser {
-  const succeed = InternalParser.succeed(value)
+  const succeed = value === 0 ? InternalParser.sameExit : InternalParser.succeed(value)
   return (input, options) => {
     if (input === InternalParser.missing) return InternalParser.missingExit
     if (input === value) return succeed

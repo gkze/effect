@@ -16,8 +16,11 @@ Type-side schemas can use separate boolean validation, output-producing validati
 
 Capture synchronous defects raised while selecting or parsing Union candidates, consistently with Struct and Array parsing. Handle numeric declared keys consistently in excess-property checks and when an index signature also selects them, preserving the fixed field's decoded output. Excess-property checking remains linear in the number of input and selected keys for interpreted and compiled records.
 
+Bound JIT inlining of repeated subgraphs to avoid oversized generated functions. Compiled `oneOf` validation stops after the second successful candidate, matching interpreted decoding and avoiding evaluation of later checks.
+
 ### Breaking changes
 
+- `Literal(0)` and `Literal(-0)` continue accepting both zero signs, matching TypeScript, but now preserve the input's sign during decoding and encoding instead of canonicalizing to the stored literal. This applies to both the interpreter and JIT, including literals nested in other schemas.
 - `Schema.Struct` accepts inherited declared fields during decoding, encoding, and construction. Declared fields use JavaScript property presence (`key in input`), except that `__proto__` must be an own property. Parsed outputs copy accepted inherited fields to own properties. Dynamic `Schema.Record` index signatures still select own properties only. Validate property ownership before parsing if you require own-only fields.
 - The `parseOptions` annotation no longer configures parsing. Pass options when creating or calling a decoder, encoder, or type guard instead. These options apply throughout the parse; nested annotations cannot override them. The old annotation key remains accepted as custom metadata but has no parsing effect. `propertyOrder` remains a runtime option.
 - Remove `concurrency` from `SchemaAST.ParseOptions`. Composite schemas parse children sequentially, including asynchronous transformations and middleware. Compose independent parsing operations with Effect concurrency combinators when needed. Transformations and middleware can still manage concurrency within their own effects.

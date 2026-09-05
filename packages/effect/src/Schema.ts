@@ -2616,6 +2616,12 @@ export interface Literal<L extends SchemaAST.LiteralValue>
 /**
  * Creates a schema for a single literal value (string, number, bigint, boolean, or null).
  *
+ * **Details**
+ *
+ * Matching uses strict equality (`===`) and preserves the input value. Like
+ * TypeScript's zero literal type, `Literal(0)` and `Literal(-0)` accept both
+ * zero signs. Decoding and encoding preserve the input's sign.
+ *
  * **Example** (Defining a string literal)
  *
  * ```ts import.meta.vitest

@@ -1,9 +1,119 @@
 import { assert, describe, it } from "@effect/vitest"
-import { Effect, Result, Schema, SchemaParser, SchemaTransformation } from "effect"
+import { Effect, Exit, Option, Result, Schema, type SchemaAST, SchemaParser, SchemaTransformation } from "effect"
 import { SchemaCompiler, SchemaJITCompiler } from "effect/unstable/schema"
 import { deepStrictEqual, strictEqual, throws } from "../utils/assert.ts"
 
 describe("compiler regression contracts", () => {
+  it("bounds inlining of shared subgraphs", () => {
+    let schema: Schema.Codec<unknown> = Schema.Struct({ value: Schema.optionalKey(Schema.String) })
+    let valid: unknown = { value: "value" }
+    let invalid: unknown = { value: 1 }
+    for (let i = 0; i < 16; i++) {
+      schema = Schema.Struct({
+        left: Schema.optionalKey(schema),
+        right: Schema.optionalKey(schema)
+      })
+      valid = { left: valid }
+      invalid = { left: invalid }
+    }
+    const cases = [
+      { schema, valid, invalid },
+      { schema, valid: { left: { right: {} } }, invalid: { left: { right: 1 } } },
+      { schema: Schema.Array(schema), valid: [{}], invalid: [1] },
+      { schema: Schema.Union([schema, Schema.String]), valid: {}, invalid: 1 }
+    ]
+    for (const { schema, valid, invalid } of cases) {
+      const expected = SchemaParser.decodeUnknownResult(schema)(invalid)
+      assert(Result.isFailure(expected))
+      SchemaJITCompiler.enable(schema.ast)
+      deepStrictEqual(SchemaParser.decodeUnknownSync(schema)(valid), valid)
+      strictEqual(SchemaParser.is(schema)(valid), true)
+      strictEqual(SchemaParser.is(schema)(invalid), false)
+      deepStrictEqual(SchemaParser.decodeUnknownResult(schema)(invalid), expected)
+    }
+  })
+
+  it("bounds generated composed parsers for wide objects", () => {
+    const property = Schema.optionalKey(Schema.String)
+    const schema = Schema.Struct(Object.fromEntries(
+      Array.from({ length: 4096 }, (_, i) => [`key${i}`, property])
+    ))
+    SchemaJITCompiler.enable(schema.ast)
+    const input = { key4095: "last" }
+    deepStrictEqual(SchemaParser.decodeUnknownSync(schema)(input), input)
+    strictEqual(SchemaParser.is(schema)(input), true)
+    strictEqual(SchemaParser.is(schema)({ key4095: 1 }), false)
+  })
+
+  it("stops oneOf after its second successful candidate", () => {
+    const schema = Schema.Union([
+      Schema.String.check(Schema.isMinLength(1)),
+      Schema.String.check(Schema.isMaxLength(10)),
+      Schema.String.check(Schema.makeFilter(() => {
+        throw new Error("The third candidate must not be evaluated")
+      }))
+    ], { mode: "oneOf" })
+    for (const compiled of [false, true]) {
+      if (compiled) SchemaJITCompiler.enable(schema.ast)
+      for (const options of [undefined, { errors: "all" }] as const) {
+        strictEqual(SchemaParser.is(schema, options)("hello"), false)
+        const result = SchemaParser.decodeUnknownResult(schema, options)("hello")
+        assert(Result.isFailure(result))
+        strictEqual(result.failure._tag, "OneOf")
+      }
+    }
+  })
+
+  it.effect("accepts both zero signs and preserves the input across parser adapters", () =>
+    Effect.gen(function*() {
+      const options: Array<SchemaAST.ParseOptions | undefined> = [
+        undefined,
+        { errors: "all" },
+        { propertyOrder: "original" }
+      ]
+      for (const literal of [0, -0]) {
+        const schemas = [
+          Schema.Literal(literal),
+          Schema.Union([Schema.Literal(literal), Schema.Literal(1)]),
+          Schema.Literal(literal).check(Schema.makeFilter((n) => Object.is(n, -0)))
+        ]
+        for (const schema of schemas) {
+          const nested = Schema.Struct({ values: Schema.Array(schema) })
+          for (const compiled of [false, true]) {
+            if (compiled) {
+              SchemaJITCompiler.enable(schema.ast)
+              SchemaJITCompiler.enable(nested.ast)
+            }
+            for (const input of [0, -0]) {
+              if (schema.ast.checks && !Object.is(input, -0)) {
+                strictEqual(SchemaParser.is(schema)(input), false)
+                assert(Result.isFailure(SchemaParser.decodeUnknownResult(schema)(input)))
+                continue
+              }
+              for (const option of options) {
+                strictEqual(SchemaParser.is(schema, option)(input), true)
+                strictEqual(Object.is(SchemaParser.decodeUnknownSync(schema, option)(input), input), true)
+                strictEqual(Object.is(SchemaParser.encodeUnknownSync(schema, option)(input), input), true)
+                const result = SchemaParser.decodeUnknownResult(schema, option)(input)
+                assert(Result.isSuccess(result))
+                strictEqual(Object.is(result.success, input), true)
+                const exit = SchemaParser.decodeUnknownExit(schema, option)(input)
+                assert(Exit.isSuccess(exit))
+                strictEqual(Object.is(exit.value, input), true)
+                const optional = SchemaParser.decodeUnknownOption(schema, option)(input)
+                assert(Option.isSome(optional))
+                strictEqual(Object.is(optional.value, input), true)
+                const output = yield* SchemaParser.decodeUnknownEffect(schema, option)(input)
+                strictEqual(Object.is(output, input), true)
+                const decoded = SchemaParser.decodeUnknownSync(nested, option)({ values: [input] })
+                strictEqual(Object.is(decoded.values[0], input), true)
+              }
+            }
+          }
+        }
+      }
+    }))
+
   it("retains the original encoding AST in local checks", () => {
     const schema = Schema.NumberFromString.check(
       Schema.makeFilter((_value, ast) => ast === schema.ast && ast.encoding !== undefined)

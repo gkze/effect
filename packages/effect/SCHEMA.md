@@ -214,6 +214,11 @@ also complete synchronously. Transformations and middleware are executed only
 by `decode` and remain outside the replay region. Enabling the JIT compiler
 changes the execution strategy, not the results of the `SchemaParser` APIs.
 
+Inlining is bounded by depth and expanded node count, including repeated uses
+of a shared subtree. Larger graphs use composed or interpreted parsers whose
+children still resolve through the shared registry, avoiding oversized generated
+functions.
+
 Unavailability of dynamic `Function` construction selects the interpreter.
 Emitter, generated-source, and factory-initialization bugs are reported rather
 than hidden by that fallback. Exceptions raised during parsing still follow
@@ -392,6 +397,10 @@ console.log(parser(null)) // => "null"
 ## Literals
 
 A literal schema matches one exact value. Use it when a field must be a specific string, number, or other constant.
+
+Matching uses strict equality (`===`). Like TypeScript, `Literal(0)` and
+`Literal(-0)` accept both zero signs; decoding and encoding preserve the input's
+sign instead of replacing it with the schema's stored literal.
 
 ```ts
 import { Schema } from "effect"

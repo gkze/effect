@@ -22,6 +22,7 @@ import { makeEncoding } from "./transformation.ts"
 const isOptional = (ast: SchemaAST.AST): boolean => ast.context?.isOptional ?? false
 
 const maxGeneratedDepth = 256
+const maxGeneratedNodes = 2048
 let functionConstructor: FunctionConstructor | undefined
 let functionConstructorSupported = false
 
@@ -50,8 +51,14 @@ const makeFunction = (...parameters: Array<string>): Function | undefined => {
 
 type Emission = 0 | 1 | 2
 
-const getEmission = (ast: SchemaAST.AST, depth = 0, local = false): Emission => {
-  if (depth > maxGeneratedDepth || !local && ast.encoding !== undefined) return 0
+const getEmission = (
+  ast: SchemaAST.AST,
+  depth = 0,
+  local = false,
+  budget = { remaining: maxGeneratedNodes }
+): Emission => {
+  // Count occurrences, not distinct ASTs: shared subgraphs are expanded by the emitter.
+  if (--budget.remaining < 0 || depth > maxGeneratedDepth || !local && ast.encoding !== undefined) return 0
   switch (ast._tag) {
     case "Null":
     case "Undefined":
@@ -71,19 +78,19 @@ const getEmission = (ast: SchemaAST.AST, depth = 0, local = false): Emission => 
       return 2
     case "TemplateLiteral": {
       for (const part of ast.parts) {
-        if (getEmission(part, depth + 1) === 0) return 0
+        if (getEmission(part, depth + 1, false, budget) === 0) return 0
       }
       return 2
     }
     case "Arrays": {
       let isOutputFree = ast.checks === undefined
       for (const element of ast.elements) {
-        const emission = getEmission(element, depth + 1)
+        const emission = getEmission(element, depth + 1, false, budget)
         if (emission === 0) return 0
         if (emission === 1) isOutputFree = false
       }
       for (const element of ast.rest) {
-        const emission = getEmission(element, depth + 1)
+        const emission = getEmission(element, depth + 1, false, budget)
         if (emission === 0) return 0
         if (emission === 1) isOutputFree = false
       }
@@ -92,13 +99,13 @@ const getEmission = (ast: SchemaAST.AST, depth = 0, local = false): Emission => 
     case "Objects": {
       let isOutputFree = ast.checks === undefined
       for (const property of ast.propertySignatures) {
-        const emission = getEmission(property.type, depth + 1)
+        const emission = getEmission(property.type, depth + 1, false, budget)
         if (emission === 0) return 0
         if (emission === 1) isOutputFree = false
       }
       for (const signature of ast.indexSignatures) {
-        const key = getEmission(SchemaAST.parameterFromPropertyKey(signature.parameter), depth + 1)
-        const value = getEmission(signature.type, depth + 1)
+        const key = getEmission(SchemaAST.parameterFromPropertyKey(signature.parameter), depth + 1, false, budget)
+        const value = getEmission(signature.type, depth + 1, false, budget)
         if (key === 0 || value === 0) return 0
         if (key === 1 || value === 1) isOutputFree = false
       }
@@ -107,7 +114,7 @@ const getEmission = (ast: SchemaAST.AST, depth = 0, local = false): Emission => 
     case "Union": {
       let isOutputFree = ast.checks === undefined
       for (const type of ast.types) {
-        const emission = getEmission(type, depth + 1)
+        const emission = getEmission(type, depth + 1, false, budget)
         if (emission === 0) return 0
         if (emission === 1) isOutputFree = false
       }
@@ -167,11 +174,6 @@ const orderProperties = (input: object, output: Record<PropertyKey, unknown>): R
 }
 
 const constant = (emitter: Emitter, value: unknown): string => {
-  if (typeof value === "number" && value === 0) {
-    const index = emitter.constants.length
-    emitter.constants.push(value)
-    return `C[${index}]`
-  }
   const cached = emitter.constantIndexes.get(value)
   if (cached !== undefined) return `C[${cached}]`
   const index = emitter.constants.length
@@ -393,7 +395,7 @@ const emitBase = (
     case "Literal": {
       const value = constant(emitter, ast.literal)
       statements.push(`if(${input}!==${value})return I`)
-      return value
+      return input
     }
     case "String":
       statements.push(`if(typeof ${input}!=="string")return I`)
@@ -537,8 +539,7 @@ const emitBase = (
     }
     case "Union": {
       const memberValues = ast.types.map(lookupMemberValues)
-      const hasSignedZeroLiteral = ast.types.some((type) => type._tag === "Literal" && type.literal === 0)
-      if (!hasSignedZeroLiteral && memberValues.every((values) => values !== undefined)) {
+      if (memberValues.every((values) => values !== undefined)) {
         if (ast.options?.mode !== "oneOf") {
           const values = constant(emitter, new Set(memberValues.flat()))
           statements.push(`if(!${values}.has(${input}))return I`)
@@ -572,7 +573,7 @@ const emitBase = (
         const successes = variable(emitter)
         statements.push(`let ${successes}=0`)
         statements.push(
-          `for(let ${index}=0;${index}<${candidates}.length;${index}++){${decoder}=${decoders}.get(${candidates}[${index}]);${candidate}=${decoder}(${input},o);if(${candidate}!==I){${successes}++;${output}=${candidate}}}`
+          `for(let ${index}=0;${index}<${candidates}.length;${index}++){${decoder}=${decoders}.get(${candidates}[${index}]);${candidate}=${decoder}(${input},o);if(${candidate}!==I){if(++${successes}>1)return I;${output}=${candidate}}}`
         )
         statements.push(`if(${successes}!==1)return I`)
       }
@@ -692,7 +693,7 @@ function compileDetailedBase(ast: SchemaAST.AST): DetailedDecoder {
     case "Literal":
       return (input, options) => {
         if (input === InternalParser.missing) return input
-        return input === ast.literal ? ast.literal : invalidType(ast, input, options)
+        return input === ast.literal ? input : invalidType(ast, input, options)
       }
     case "String":
       return (input, options) => {
@@ -1125,6 +1126,7 @@ const makeComposedObjectDecode = (
   ast: SchemaAST.Objects,
   resolve: ResolveParser
 ): Parser | undefined => {
+  if (ast.propertySignatures.length > maxGeneratedNodes) return undefined
   const properties = ast.propertySignatures.map((property): ParsedProperty => {
     const out: ParsedProperty = {
       type: property.type,
