@@ -1,9 +1,62 @@
 import { assert, describe, it } from "@effect/vitest"
-import { Effect, Exit, Option, Result, Schema, type SchemaAST, SchemaParser, SchemaTransformation } from "effect"
+import { Effect, Exit, Option, Result, Schema, SchemaAST, SchemaParser, SchemaTransformation } from "effect"
+import * as CompilerRegistry from "effect/internal/schema/compilerRegistry"
 import { SchemaCompiler, SchemaJITCompiler } from "effect/unstable/schema"
 import { deepStrictEqual, strictEqual, throws } from "../utils/assert.ts"
 
 describe("compiler regression contracts", () => {
+  it.effect("resolved parsers return Effects containing their actual output", () =>
+    Effect.gen(function*() {
+      const object = { value: "a" }
+      const cases: ReadonlyArray<readonly [Schema.Constraint, unknown, unknown]> = [
+        [Schema.String, "a", "a"],
+        [Schema.Number, -0, -0],
+        [Schema.Literal(0), -0, -0],
+        [Schema.Undefined, undefined, undefined],
+        [Schema.ObjectKeyword, object, object],
+        [Schema.Json, object, object],
+        [Schema.Struct({}), 1, 1],
+        [Schema.TemplateLiteral(["a"]), "a", "a"],
+        [Schema.FiniteFromString, "1", 1]
+      ]
+      for (const [schema, input, expected] of cases) {
+        for (const compiled of [false, true]) {
+          if (compiled) SchemaJITCompiler.enable(schema.ast)
+          const parser = CompilerRegistry.resolve(schema.ast)
+          const output = yield* Effect.map(parser(input, SchemaAST.defaultParseOptions), (value) => value)
+          strictEqual(Object.is(output, expected), true)
+        }
+      }
+    }))
+
+  it("calls installed operations with options without inspecting extra function properties", () => {
+    const schema = Schema.Struct({ value: Schema.String })
+    const seen: Array<SchemaAST.ParseOptions> = []
+    const is: SchemaCompiler.Is = (_input, options) => {
+      seen.push(options)
+      return true
+    }
+    const validate: SchemaCompiler.Validate = (input, options) => {
+      seen.push(options)
+      return input
+    }
+    for (const operation of [is, validate]) {
+      Object.defineProperty(operation, "default", {
+        get() {
+          throw new Error("Not part of the compiled decoder contract")
+        }
+      })
+    }
+    SchemaCompiler.set(schema.ast, { is, validate, decode: Effect.succeed })
+    const input = { value: "a" }
+    strictEqual(SchemaParser.is(schema)(input), true)
+    strictEqual(SchemaParser.decodeUnknownSync(schema)(input), input)
+    const options = { reportInput: true }
+    strictEqual(SchemaParser.is(schema, options)(input), true)
+    strictEqual(SchemaParser.decodeUnknownSync(schema, options)(input), input)
+    deepStrictEqual(seen, [SchemaAST.defaultParseOptions, SchemaAST.defaultParseOptions, options, options])
+  })
+
   it("bounds inlining of shared subgraphs", () => {
     let schema: Schema.Codec<unknown> = Schema.Struct({ value: Schema.optionalKey(Schema.String) })
     let valid: unknown = { value: "value" }

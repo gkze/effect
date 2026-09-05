@@ -10,9 +10,9 @@ function makeConstructorParser(descriptor: SchemaAST.ConstructorDescriptor, reso
   let sourceParser: Parser
   return (input, options) => {
     if (input === InternalParser.missing) return InternalParser.missingExit
-    if (descriptor.isConstructed(input)) return InternalParser.sameExit
+    if (descriptor.isConstructed(input)) return InternalParser.succeed(input)
     const result = (sourceParser ??= resolve(descriptor.link.to))(input, options)
-    return applyTransformation(result, input, descriptor.link.transformation, options)
+    return applyTransformation(result, descriptor.link.transformation, options)
   }
 }
 
@@ -50,9 +50,7 @@ export function applyChecks(ast: SchemaAST.AST, parser: Parser): Parser {
     if (encodingChecks && !options.disableChecks) {
       if (effectIsExit(result)) {
         if (result._tag === "Success") {
-          const output = result === InternalParser.sameExit
-            ? input
-            : (result as InternalParser.Success<unknown, SchemaIssue.Issue>)[InternalParser.args]
+          const output = (result as InternalParser.Success<unknown, SchemaIssue.Issue>)[InternalParser.args]
           if (input !== InternalParser.missing && output !== InternalParser.missing) {
             const issues = SchemaAST.collectIssues(encodingChecks, input, undefined, ast, options)
             if (issues) result = Effect.fail(new SchemaIssue.Composite(ast, issues, input, options))
@@ -71,9 +69,7 @@ export function applyChecks(ast: SchemaAST.AST, parser: Parser): Parser {
     if (checks && !options.disableChecks) {
       if (effectIsExit(result)) {
         if (result._tag === "Success") {
-          const value = result === InternalParser.sameExit
-            ? input
-            : (result as InternalParser.Success<unknown, SchemaIssue.Issue>)[InternalParser.args]
+          const value = (result as InternalParser.Success<unknown, SchemaIssue.Issue>)[InternalParser.args]
           if (value === InternalParser.missing) return result
           const issues = SchemaAST.collectIssues(checks, value, undefined, ast, options)
           if (issues) result = Effect.fail(new SchemaIssue.Composite(ast, issues, value, options))

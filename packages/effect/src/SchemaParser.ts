@@ -558,7 +558,7 @@ export function decodeUnknownSync<S extends Schema.ConstraintDecoder<unknown>>(
   if (options !== undefined) return decode
   let parser: Parser | undefined
   let compiled: CompilerRegistry.PreparedSyncDecoder | undefined
-  let validate: ((input: unknown) => unknown | typeof CompilerRegistry.invalid) | undefined
+  let validate: CompilerRegistry.Validate | undefined
   return (input, overrideOptions) => {
     if (overrideOptions !== undefined) return decode(input, overrideOptions)
     if (parser === undefined) {
@@ -572,7 +572,6 @@ export function decodeUnknownSync<S extends Schema.ConstraintDecoder<unknown>>(
       const result = parser(input, SchemaAST.defaultParseOptions)
       if (effectIsExit(result)) {
         if (Exit.isFailure(result)) return throwSyncCause(result.cause)
-        if (result === InternalParser.sameExit) return input as S["Type"]
         const value = (result as InternalParser.Success<unknown, SchemaIssue.Issue>)[InternalParser.args]
         return value === InternalParser.missing
           ? throwSyncCause(Cause.fail(new SchemaIssue.InvalidValue()))
@@ -582,7 +581,7 @@ export function decodeUnknownSync<S extends Schema.ConstraintDecoder<unknown>>(
     }
     let output: unknown
     try {
-      output = validate(input)
+      output = validate(input, SchemaAST.defaultParseOptions)
     } catch (error) {
       return throwSyncDefect(error)
     }
@@ -995,9 +994,6 @@ function runParser<T, R>(
   options: SchemaAST.ParseOptions
 ): Effect.Effect<T, SchemaIssue.Issue, R> {
   const result = parser(input, options)
-  if (result === InternalParser.sameExit) {
-    return Effect.succeed(input) as Effect.Effect<T, SchemaIssue.Issue, R>
-  }
   if (!effectIsExit(result)) {
     return Effect.flatMapEager(result, getValue)
   }

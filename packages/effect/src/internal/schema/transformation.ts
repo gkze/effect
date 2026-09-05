@@ -11,16 +11,13 @@ import * as InternalParser from "./parser.ts"
 /** @internal */
 export function applyTransformation(
   result: Effect.Effect<unknown, SchemaIssue.Issue, unknown>,
-  current: unknown,
   transformation: SchemaAST.Link["transformation"],
   options: SchemaAST.ParseOptions
 ): Effect.Effect<unknown, SchemaIssue.Issue, unknown> {
   let transformed: Effect.Effect<Option.Option<unknown>, SchemaIssue.Issue, unknown>
   if (effectIsExit(result) && result._tag === "Success") {
     const optional = InternalParser.toOption(
-      result === InternalParser.sameExit
-        ? current
-        : (result as InternalParser.Success<unknown, SchemaIssue.Issue>)[InternalParser.args]
+      (result as InternalParser.Success<unknown, SchemaIssue.Issue>)[InternalParser.args]
     )
     transformed = transformation._tag === "Transformation"
       ? transformation.decode.run(optional, options)
@@ -51,33 +48,26 @@ export const makeEncoding = (
   local: Parser
 ): Parser =>
 (input, options) => {
-  let current = input
   let result = parsers[parsers.length - 1](input, options)
   for (let index = links.length - 1; index >= 0; index--) {
-    result = applyTransformation(result, current, links[index].transformation, options)
+    result = applyTransformation(result, links[index].transformation, options)
     if (index !== 0) {
       const next = parsers[index - 1]
       if ((result as Exit.Exit<unknown, unknown>)._tag === "Success") {
-        current = (result as InternalParser.Success<unknown, SchemaIssue.Issue>)[InternalParser.args]
-        result = next(current, options)
+        result = next((result as InternalParser.Success<unknown, SchemaIssue.Issue>)[InternalParser.args], options)
       } else {
-        result = Effect.flatMapEager(result, (value) => {
-          return InternalParser.materialize(next(value, options), value)
-        })
+        result = Effect.flatMapEager(result, (value) => next(value, options))
       }
     }
   }
   if ((result as Exit.Exit<unknown, unknown>)._tag === "Success") {
     const value = (result as InternalParser.Success<unknown, SchemaIssue.Issue>)[InternalParser.args]
-    const decoded = local(value, options)
-    return decoded === InternalParser.sameExit ? result : decoded
+    return local(value, options)
   }
   result = Effect.catchCause(
     result,
     (cause) =>
       Effect.failCauseSync(() => Cause.map(cause, (issue) => new SchemaIssue.Encoding(ast, issue, input, options)))
   )
-  return Effect.flatMapEager(result, (value) => {
-    return InternalParser.materialize(local(value, options), value)
-  })
+  return Effect.flatMapEager(result, (value) => local(value, options))
 }

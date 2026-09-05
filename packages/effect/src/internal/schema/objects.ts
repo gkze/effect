@@ -36,7 +36,6 @@ export function stepProperty(
   exit: Exit.Exit<unknown, SchemaIssue.Issue>
 ): Exit.Exit<void, SchemaIssue.Issue> | void {
   if (exit._tag === "Failure") return wrapPropertyKeyIssue(state, state.ast, property.name, exit)
-  if (exit === InternalParser.sameExit) return
   const value = (exit as InternalParser.Success<unknown, SchemaIssue.Issue>)[InternalParser.args]
   if (value !== InternalParser.missing) {
     assignProperty(state.out, property.name, value)
@@ -68,7 +67,6 @@ export const parseProperties = iterateEager<ObjectParserState, ParsedProperty>()
       if (!present) return property.parser(InternalParser.missing, state.options)
       value = state.input[name]
     }
-    assignProperty(state.out, name, value)
     return property.parser(value, state.options)
   },
   step: stepProperty

@@ -5,14 +5,14 @@ import * as SchemaIssue from "../../SchemaIssue.ts"
 import { effectIsExit } from "../effect.ts"
 import * as InternalSchemaCause from "./cause.ts"
 import {
+  type CompiledDecoder,
   getDirectParser,
   invalid,
-  type OptimizedCompiledDecoder,
-  type OptimizedIs,
-  type OptimizedValidate,
+  type Is,
   type Parser,
   prepareDecode,
-  type ResolveParser
+  type ResolveParser,
+  type Validate
 } from "./compilerRegistry.ts"
 import { applyChecks } from "./interpreter.ts"
 import { hasDefaultObjectOptions, type ParsedProperty, resumeProperties } from "./objects.ts"
@@ -948,13 +948,13 @@ function compileDetailedUnion(ast: SchemaAST.Union): DetailedDecoder {
   }
 }
 
-const makeDetailed = (decode: DetailedDecoder): OptimizedCompiledDecoder["decode"] => {
+const makeDetailed = (decode: DetailedDecoder): CompiledDecoder["decode"] => {
   return (input, options) => {
     try {
       const output = decode(input, options)
       if (isFailure(output)) return Effect.fail(output.issue)
       if (output === InternalParser.missing) return InternalParser.missingExit
-      return output === input ? InternalParser.sameExit : InternalParser.succeed(output)
+      return InternalParser.succeed(output)
     } catch (error) {
       return Effect.die(error)
     }
@@ -1035,9 +1035,6 @@ const makeComposedObjectDefault = (
     const property = properties[index]
     const key = typeof property.name === "string" ? JSON.stringify(property.name) : "P[" + index + "].name"
     const value = "v" + index
-    const assign = property.name === "__proto__" || typeof property.name !== "string"
-      ? "AP(out," + key + "," + value + ")"
-      : "out[" + key + "]=" + value
     const assignDecoded = property.name === "__proto__" || typeof property.name !== "string"
       ? "AP(out," + key + ",x)"
       : "out[" + key + "]=x"
@@ -1045,21 +1042,21 @@ const makeComposedObjectDefault = (
     if (property.valueFirst) {
       statements.push(
         "let " + value + "=i[" + key + "]",
-        "if(" + value + "===void 0&&!(" + present + "))" + value + "=M;else " + assign
+        "if(" + value + "===void 0&&!(" + present + "))" + value + "=M"
       )
     } else {
       statements.push(
         "let " + value,
-        "if(" + present + "){" + value + "=i[" + key + "];" + assign + "}else " + value + "=M"
+        "if(" + present + ")" + value + "=i[" + key + "];else " + value + "=M"
       )
     }
     statements.push(
       "r=P[" + index + "].parser(" + value + ",o)",
-      "if(r!==S){if(!X(r))return R(T,P,i,out," + index +
+      "if(!X(r))return R(T,P,i,out," + index +
         ",r,o);if(r._tag===\"Failure\")return W(T,i,o," + key +
         ",r);x=r[A];if(x===M){delete out[" + key + "];" +
         (isOptional(property.type) ? "" : "return N(T,i,o,P[" + index + "])") +
-        "}else{" + assignDecoded + "}}"
+        "}else{" + assignDecoded + "}"
     )
   }
   statements.push("return SU(out)")
@@ -1075,7 +1072,6 @@ const makeComposedObjectDefault = (
     "MX",
     "IT",
     "AP",
-    "S",
     "A",
     "X",
     "R",
@@ -1096,7 +1092,6 @@ const makeComposedObjectDefault = (
     (ast: SchemaAST.AST, input: unknown, options: SchemaAST.ParseOptions) =>
       Effect.fail(new SchemaIssue.InvalidType(ast, input, options)),
     assignDecodedProperty,
-    InternalParser.sameExit,
     InternalParser.args,
     effectIsExit,
     resumeComposedObject,
@@ -1138,7 +1133,7 @@ const canCompileComposedObject = (ast: SchemaAST.Objects): boolean =>
 const makeEncodingDetailed = (
   ast: SchemaAST.AST,
   resolve: ResolveParser
-): OptimizedCompiledDecoder["decode"] => {
+): CompiledDecoder["decode"] => {
   const links = ast.encoding!
   const parsers = links.map((link) => resolveDirect(resolve, link.to))
   // The local stage skips only this node's encoding. Its checks and issues
@@ -1162,12 +1157,10 @@ const makeEncodingDetailed = (
   }
 }
 
-type GeneratedValidate = (input: unknown, options?: SchemaAST.ParseOptions) => unknown | typeof invalid
-
 const makeValidate = (
   ast: SchemaAST.AST,
   needsValue: boolean
-): GeneratedValidate | undefined => {
+): Validate | undefined => {
   const emitter: Emitter = {
     statements: [],
     helpers: [],
@@ -1179,7 +1172,7 @@ const makeValidate = (
     next: 0
   }
   const output = emit(ast, "i", emitter.statements, emitter, needsValue)
-  const source = `"use strict";${emitter.helpers.join(";")};${emitter.initializers.join(";")};return function(i,o=D){${
+  const source = `"use strict";${emitter.helpers.join(";")};${emitter.initializers.join(";")};return function(i,o){${
     emitter.statements.join(";")
   };return ${output}}`
   const factory = makeFunction("I", "C", "K", "T", "U", "G", "D", "E", source)
@@ -1209,35 +1202,29 @@ class CompiledDecoderImpl {
     return detailed
   }
 
-  get is(): OptimizedIs | undefined {
+  get is(): Is | undefined {
     const generated = this.emitIs ? makeValidate(this.ast, false) : undefined
-    const is: OptimizedIs | undefined = generated === undefined
+    const is: Is | undefined = generated === undefined
       ? undefined
-      : Object.assign(
-        (input: unknown, options: SchemaAST.ParseOptions) => generated(input, options) !== invalid,
-        { default: (input: unknown) => generated(input) !== invalid }
-      )
+      : (input, options) => generated(input, options) !== invalid
     Object.defineProperty(this, "is", { value: is })
     return is
   }
 
-  get validate(): OptimizedValidate | undefined {
-    const generated = makeValidate(this.ast, true)
-    const validate: OptimizedValidate | undefined = generated === undefined
-      ? undefined
-      : Object.assign(generated, { default: generated })
+  get validate(): Validate | undefined {
+    const validate = makeValidate(this.ast, true)
     Object.defineProperty(this, "validate", { value: validate })
     return validate
   }
 
-  get decode(): OptimizedCompiledDecoder["decode"] {
+  get decode(): CompiledDecoder["decode"] {
     const decode = makeDetailed(this.detailed)
     Object.defineProperty(this, "decode", { value: decode })
     return decode
   }
 }
 
-const fromDecode = (makeDecode: () => OptimizedCompiledDecoder["decode"]): OptimizedCompiledDecoder => ({
+const fromDecode = (makeDecode: () => CompiledDecoder["decode"]): CompiledDecoder => ({
   get decode() {
     const decode = makeDecode()
     Object.defineProperty(this, "decode", { value: decode })
@@ -1246,11 +1233,11 @@ const fromDecode = (makeDecode: () => OptimizedCompiledDecoder["decode"]): Optim
 })
 
 /** @internal */
-export const compile = (ast: SchemaAST.AST, resolve: ResolveParser): OptimizedCompiledDecoder | undefined => {
+export const compile = (ast: SchemaAST.AST, resolve: ResolveParser): CompiledDecoder | undefined => {
   if (!shouldCompileParser(ast) || !supportsDynamicFunction()) return undefined
   const emission = getEmission(ast)
   if (emission !== 0) {
-    return new CompiledDecoderImpl(ast, emission === 2) as OptimizedCompiledDecoder
+    return new CompiledDecoderImpl(ast, emission === 2)
   }
   if (ast.encoding !== undefined) return fromDecode(() => makeEncodingDetailed(ast, resolve))
   if (ast._tag === "Objects" && canCompileComposedObject(ast)) {

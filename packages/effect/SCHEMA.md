@@ -167,9 +167,16 @@ When `validate` is available, successful decoding stops there. When it returns
 decoding calls `decode` directly. `validate` supports every runtime parse option
 without calling the detailed decoder or discarding its issues. `INVALID` means
 invalid input, never an unsupported optimization. Custom check callbacks may
-still allocate issues. Each validator is generated once with a default options
-parameter. It does not require another dynamic compilation to handle different
-options, and the default ignore path does not scan excess keys.
+still allocate issues. Each validator is generated once and receives parse
+options explicitly. Public adapters supply the default options when omitted.
+Different options do not require another dynamic compilation, and the default
+ignore path does not scan excess keys.
+
+JIT and installed decoders use the same `CompiledDecoder` operation types,
+without a separate `.default` function property. Detailed decoders and
+interpreted parsers return ordinary Effects whose successes contain the actual
+output, including when it is identical to the input. There is no unchanged-input
+success sentinel to interpret before composing the result with Effect APIs.
 
 Pass parse options when creating or calling a parser. They apply throughout the
 parse; annotations cannot override them. Composite schemas parse children
@@ -230,37 +237,71 @@ This snapshot is checked in so compiler regressions appear as numeric changes in
 the Git diff. Keep scenario names, units, environment, and measurement settings
 unchanged when updating it. Lower values are better.
 
-##### Latest paired Moltar comparison, 2026-09-05
+##### Latest paired cleanup comparison, 2026-09-05
 
-This comparison measures removal of `propertyOrder` against `8ab3423e70`.
+This comparison removes `.default` and `sameExit` against `5296eb53d6`, which
+already removed `propertyOrder`. The cleanup keeps ordinary Effect results and
+one compiled-operation interface; it has confirmed performance costs below.
 Both sides use public `SchemaParser` APIs on Node 24.12.0, V8 13.6, Apple M3.
-Each case uses nine fresh process pairs, 500 ms measurement, 150 ms warmup,
-and batch 256, with alternating base/worktree order.
+Moltar uses nine fresh process pairs, 500 ms measurement, 150 ms warmup, and
+batch 256, with alternating base/worktree order. Values are median ns/op.
 
 | Compiled case                 | Before (ns/op) | After (ns/op) |
 | ----------------------------- | -------------: | ------------: |
-| `parseSafe`, valid            |            9.1 |           5.6 |
-| `parseSafe`, extra property   |            9.0 |           5.6 |
-| `parseSafe`, invalid          |         3015.7 |        2994.3 |
-| `assertLoose`, valid          |            3.6 |           3.6 |
+| `parseSafe`, valid            |            5.7 |           5.9 |
+| `parseSafe`, extra property   |            5.9 |           6.3 |
+| `parseSafe`, invalid          |         3019.5 |        3044.2 |
+| `assertLoose`, valid          |            3.8 |           3.7 |
 | `assertLoose`, extra property |            3.6 |           3.6 |
 | `assertLoose`, invalid        |            3.1 |           3.1 |
-| First use, `parseSafe`        |         9874.3 |        8892.5 |
-| First use, `assertLoose`      |         9324.7 |        8779.6 |
+| First use, `parseSafe`        |         8873.3 |        8846.9 |
+| First use, `assertLoose`      |         9219.4 |        8754.7 |
 
-Paired valid-decode time decreases 37.95%, with a 95% interval of
-28.44–42.93%. Extra-property decoding also improves. First-use time decreases
-10.11% for decoding and 5.40% for boolean validation. Invalid decoding and
-steady-state boolean validation are inconclusive; no case is classified as a
-regression. Removing the generated ordering branch restores V8 inlining in
-this benchmark without runtime flags or changes to the Moltar fixtures.
+All eight Moltar comparisons are inconclusive under the runner's existing
+thresholds. This does not establish equivalence: valid decode has a paired
+change of +1.95%, with a 95% interval of -4.93% to +4.03%; the extra-property
+case has +2.16%, with an interval of -2.48% to +10.90%.
+
+A separate first-stage experiment removed only `.default`. Extra-property
+decoding regressed from 5.6 to 9.1 ns, a paired +62.43% with a 95% interval
+of +60.97% to +63.86%. The table above measures the combined cleanup, which
+also removes unchanged-input branches from the public adapters. The two
+experiments are each paired against HEAD, not against one another.
+
+Broader cases use five fresh process pairs, 300 ms measurement, 100 ms warmup,
+and a shared calibrated batch per base/head pair. Scenario names below have
+the `schema-compiler-` prefix. Values are median ns/op.
+
+| Scenario                      | Interpreted before | Interpreted after | Compiled before | Compiled after |
+| ----------------------------- | -----------------: | ----------------: | --------------: | -------------: |
+| `array-100-valid`             |              710.5 |            1410.1 |           127.3 |          129.9 |
+| `tuple-rest-valid`            |              425.3 |             592.4 |            45.3 |           37.6 |
+| `record-valid`                |             4091.8 |            5464.1 |           680.3 |          683.4 |
+| `tagged-union-100-valid-last` |              117.1 |             132.3 |            27.7 |           28.0 |
+| `checked-string-valid`        |               19.7 |              22.4 |             8.2 |            8.0 |
+| `transformation-root-valid`   |               42.4 |              46.7 |            37.0 |           45.5 |
+| `transformation-struct-valid` |             2055.3 |            2577.2 |          1231.5 |         1604.6 |
+| `middleware-struct-valid`     |             1913.6 |            2526.6 |           414.5 |          409.9 |
+| `recursive-node-valid`        |            13531.2 |           14511.9 |          8308.0 |         8872.7 |
+
+Seven broader comparisons are classified as regressions: interpreted Array
+(+98.45%), Record (+29.86%), transformation Struct (+32.87%), middleware Struct
+(+33.24%) and recursive node (+7.27%); compiled root transformation (+22.53%)
+and transformation Struct (+24.88%). The other eleven are inconclusive, not
+confirmed improvements. Percentages are medians of paired ratios, not ratios
+of the displayed medians. The interpreted Array interval is +86.02% to
++115.99%; the compiled transformation Struct interval is +13.08% to +51.88%.
 
 Reproduce with `pnpm runtimeperf-compare moltar-parse-safe --implementation
 effect-compiled --rounds 9 --time 500 --warmup-time 150` and the same command
-for `moltar-assert-loose`. Both reports measured worktree diff
-`5f3c541b60759a31d36b2946f8a64a78e79e5cd939d1a33b815f4a08134d9550`, before this
-documentation update. Bundle, memory, interpreted throughput and Zod were not
-remeasured for this removal; the following tables retain historical snapshots.
+for `moltar-assert-loose`. For broader cases use `pnpm runtimeperf-compare
+schema-compiler-<scenario> --rounds 5 --time 300 --warmup-time 100`.
+All combined-cleanup reports measured worktree diff
+`78b1b5841eabf76cae09f3ad1976fbaef18ab32ef9847647db24305dc27e7481`, before this
+documentation update. The `.default`-only diff was
+`dcc0e411a622fa20163f65b4f071ed69d223aed1f3f005f49fb084389867beb1`.
+Bundle, retained memory and Zod were not remeasured; subsequent tables retain
+historical snapshots. No runtime flags or benchmark fixtures were changed.
 
 ##### Historical cross-library snapshots
 

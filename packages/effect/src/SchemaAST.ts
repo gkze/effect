@@ -1482,7 +1482,7 @@ export const TemplateLiteral: new(
       if (input === InternalParser.missing) return InternalParser.missingExit
       const result = parser(input, options)
       if ((result as Exit.Exit<unknown, unknown>)._tag === "Success") {
-        return InternalParser.sameExit
+        return InternalParser.succeed(input)
       }
       return Effect.mapBothEager(result, {
         onSuccess: () => input,
@@ -2369,13 +2369,11 @@ const parseArray = iterateEager<{
     const value = i < s.len ? item : InternalParser.missing
     return s.getParser(s.tailThreshold, i).parser(value, s.options)
   },
-  step(s, item, exit, i) {
+  step(s, _item, exit, i) {
     if (exit._tag === "Failure") {
       return wrapPropertyKeyIssue(s, s.ast, i, exit)
     }
-    const value = exit === InternalParser.sameExit
-      ? item
-      : (exit as InternalParser.Success<unknown, SchemaIssue.Issue>)[InternalParser.args]
+    const value = (exit as InternalParser.Success<unknown, SchemaIssue.Issue>)[InternalParser.args]
     if (value !== InternalParser.missing) {
       s.output[i] = value
     } else {
@@ -2685,15 +2683,12 @@ export const Objects: new(
       s: ObjectParserState,
       key: PropertyKey,
       k2: PropertyKey | typeof InternalParser.missing,
-      inputValue: unknown,
       exitValue: Exit.Exit<unknown, SchemaIssue.Issue>
     ): Effect.Effect<void, SchemaIssue.Issue, any> => {
       if (exitValue._tag === "Failure") {
         return wrapPropertyKeyIssue(s, ast, key, exitValue) ?? Exit.void
       }
-      const value = exitValue === InternalParser.sameExit
-        ? inputValue
-        : (exitValue as InternalParser.Success<unknown, SchemaIssue.Issue>)[InternalParser.args]
+      const value = (exitValue as InternalParser.Success<unknown, SchemaIssue.Issue>)[InternalParser.args]
       if (k2 !== InternalParser.missing && value !== InternalParser.missing) {
         if (
           hasProperties &&
@@ -2719,14 +2714,12 @@ export const Objects: new(
       if (exitKey._tag === "Failure") {
         return wrapPropertyKeyIssue(s, ast, key, exitKey) ?? Exit.void
       }
-      const k2 = exitKey === InternalParser.sameExit
-        ? key
-        : (exitKey as InternalParser.Success<PropertyKey, SchemaIssue.Issue>)[InternalParser.args]
+      const k2 = (exitKey as InternalParser.Success<PropertyKey, SchemaIssue.Issue>)[InternalParser.args]
       const inputValue = s.input[key]
       const result = index.parserValue(inputValue, s.options)
       return effectIsExit(result)
-        ? finishIndex(s, key, k2, inputValue, result)
-        : Effect.flatMap(Effect.exit(result), (exit) => finishIndex(s, key, k2, inputValue, exit))
+        ? finishIndex(s, key, k2, result)
+        : Effect.flatMap(Effect.exit(result), (exit) => finishIndex(s, key, k2, exit))
     }
     const parseStringIndex = (
       s: ObjectParserState,
@@ -2736,8 +2729,8 @@ export const Objects: new(
       const inputValue = s.input[key]
       const result = index.parserValue(inputValue, s.options)
       return effectIsExit(result)
-        ? finishIndex(s, key, key, inputValue, result)
-        : Effect.flatMap(Effect.exit(result), (exit) => finishIndex(s, key, key, inputValue, exit))
+        ? finishIndex(s, key, key, result)
+        : Effect.flatMap(Effect.exit(result), (exit) => finishIndex(s, key, key, exit))
     }
     const compileMembers = (): Array<ParsedProperty> => {
       if (!properties) {
@@ -2882,11 +2875,6 @@ export const Objects: new(
           const exit = property.parser(value, options)
           if (!effectIsExit(exit)) {
             return resumeProperties(state, props, index, exit)
-          }
-          if (exit === InternalParser.sameExit) {
-            // Missing inputs return `missingExit`, so `sameExit` proves the property was present.
-            InternalRecord.assignProperty(out, name, value)
-            continue
           }
           const terminal = stepProperty(state, property, exit)
           if (terminal) return terminal
@@ -3472,7 +3460,6 @@ export const Union: new<A extends AST = AST>(
         return Effect.fail(new SchemaIssue.AnyOf(ast, state.issues ?? [], input, options))
       }
       return Effect.flatMapEager(eff, (_) => {
-        if (state.out === InternalParser.sameExit) return Effect.succeed(input)
         if (state.out) return state.out
         return Effect.fail(new SchemaIssue.AnyOf(ast, state.issues ?? [], input, options))
       })
@@ -4471,10 +4458,10 @@ function fromConst<const T>(
   ast: AST,
   value: T
 ): SchemaParser.Parser {
-  const succeed = value === 0 ? InternalParser.sameExit : InternalParser.succeed(value)
+  const succeed = InternalParser.succeed(value)
   return (input, options) => {
     if (input === InternalParser.missing) return InternalParser.missingExit
-    if (input === value) return succeed
+    if (input === value) return value === 0 ? InternalParser.succeed(input) : succeed
     return Effect.fail(new SchemaIssue.InvalidType(ast, input, options))
   }
 }
@@ -4485,7 +4472,7 @@ function fromRefinement<T>(
 ): SchemaParser.Parser {
   return (input, options) => {
     if (input === InternalParser.missing) return InternalParser.missingExit
-    if (refinement(input)) return InternalParser.sameExit
+    if (refinement(input)) return InternalParser.succeed(input)
     return Effect.fail(new SchemaIssue.InvalidType(ast, input, options))
   }
 }
@@ -4931,7 +4918,7 @@ export const Json = new Declaration(
   [],
   () => (input, ast, options) =>
     isJson(input) ?
-      InternalParser.sameExit :
+      InternalParser.succeed(input) :
       Effect.fail(new SchemaIssue.InvalidType(ast, input, options)),
   {
     representation: {
@@ -4982,7 +4969,7 @@ const StringTree = new Declaration(
   [],
   () => (input, ast, options) =>
     isStringTree(input) ?
-      InternalParser.sameExit :
+      InternalParser.succeed(input) :
       Effect.fail(new SchemaIssue.InvalidType(ast, input, options)),
   { expected: "StringTree", toCodecStringTree: () => undefined }
 )
