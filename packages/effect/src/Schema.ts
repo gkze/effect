@@ -3372,9 +3372,9 @@ function makeStruct<const Fields extends Struct.Fields>(ast: SchemaAST.Objects, 
  * Dynamic {@link Record} index signatures continue to select own properties
  * only.
  *
- * Runtime `propertyOrder: "original"` retains input key order on both decoding
- * and encoding, including nested objects. The default `"none"` leaves key order
- * unspecified. Unknown properties are stripped, or rejected when the parser
+ * Output property order is unspecified, including in values passed to checks.
+ * Decoding and encoding do not guarantee preservation of input key order.
+ * Unknown properties are stripped, or rejected when the parser
  * receives `onExcessProperty: "error"`. `Struct({})` instead accepts every
  * non-nullish value unchanged, matching TypeScript's `{}` type.
  *
@@ -3779,8 +3779,8 @@ export interface $Record<Key extends Record.Key, Value extends Constraint> exten
  *
  * **Details**
  *
- * Runtime `propertyOrder: "original"` retains input key order on decoding and
- * encoding. Keys created by transformations are appended in output order.
+ * Output property order is unspecified, including in values passed to checks.
+ * Decoding and encoding do not guarantee preservation of input key order.
  * Runtime `onExcessProperty: "error"` rejects own keys not selected by the key
  * schema. The default `"ignore"` strips them.
  *

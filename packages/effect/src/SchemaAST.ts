@@ -462,7 +462,7 @@ export type Encoding = readonly [Link, ...Array<Link>]
  * **Details**
  *
  * Pass to `Schema.decodeUnknown`, `Schema.encode`, and related APIs to customize
- * error reporting, excess property handling, output key ordering, and check
+ * error reporting, excess property handling, and check
  * execution. Options apply throughout the parse; schema annotations do not
  * override them. Composite schemas parse their children sequentially, including
  * asynchronous transformations and middleware.
@@ -471,12 +471,13 @@ export type Encoding = readonly [Link, ...Array<Link>]
  *   every error.
  * - `onExcessProperty` — `"ignore"` (default) strips unknown object keys;
  *   `"error"` fails.
- * - `propertyOrder` — `"none"` (default) leaves key order unspecified;
- *   `"original"` preserves input key order, including nested objects.
  * - `disableChecks` — skips validation checks while still applying defaults and
  *   transformations.
  * - `reportInput` — includes rejected input values in value-bearing schema
  *   issues.
+ *
+ * Object property order is unspecified, including in values passed to checks.
+ * Decoding and encoding do not guarantee preservation of input key order.
  *
  * @category options
  * @since 3.10.0
@@ -509,25 +510,6 @@ export interface ParseOptions {
    * @default "ignore"
    */
   readonly onExcessProperty?: "ignore" | "error" | undefined
-
-  /**
-   * Controls the order of object fields in the output, including nested objects.
-   *
-   * **Details**
-   *
-   * The default, `"none"`, lets the parser choose key order. `"original"`
-   * retains input key order and appends newly created keys in output order.
-   * This applies to decoding, encoding, and the values passed to checks.
-   * JavaScript's ordering rules for integer and symbol keys still apply.
-   *
-   * **Gotchas**
-   *
-   * The order produced by `"none"` is not stable and may change in future
-   * updates without notice.
-   *
-   * @default "none"
-   */
-  readonly propertyOrder?: "none" | "original" | undefined
 
   /**
    * Whether to disable checks while still applying defaults and
@@ -2802,7 +2784,6 @@ export const Objects: new(
       // ---------------------------------------------
       // handle excess properties
       // ---------------------------------------------
-      let inputKeys: Array<PropertyKey> | undefined
       const indexKeys = indexCount && onExcessPropertyError
         ? ast.indexSignatures.map((index) => getIndexSignatureKeys(record, index.parameter, options))
         : undefined
@@ -2814,7 +2795,7 @@ export const Objects: new(
             for (const key of keys) coveredKeys.add(key)
           }
         }
-        inputKeys = Reflect.ownKeys(record)
+        const inputKeys = Reflect.ownKeys(record)
         for (let i = 0; i < inputKeys.length; i++) {
           const key = inputKeys[i]
           if (!coveredKeys.has(key)) {
@@ -2867,17 +2848,6 @@ export const Objects: new(
         return yield* Effect.fail(
           new SchemaIssue.Composite(ast, state.issues, input, options)
         )
-      }
-      if (options.propertyOrder === "original") {
-        // preserve input keys order
-        const keys = (inputKeys ?? Reflect.ownKeys(record)).concat(Reflect.ownKeys(out))
-        const preserved: Record<PropertyKey, unknown> = {}
-        for (const key of keys) {
-          if (Object.hasOwn(out, key)) {
-            InternalRecord.assignProperty(preserved, key, out[key])
-          }
-        }
-        return preserved
       }
       return out
     })

@@ -330,7 +330,7 @@
   note: "Use the built-in JSON string codec instead of checking the old schema ID."
 "effect/SchemaAST#ParseOptions":
   replacement: "SchemaAST.ParseOptions"
-  note: "Pass parsing options at runtime, including propertyOrder. onExcessProperty supports ignore or error, not preserve; model extra values with an explicit Record or StructWithRest. The concurrency option was removed."
+  note: "Pass parsing options at runtime. onExcessProperty supports ignore or error, not preserve; model extra values with an explicit Record or StructWithRest. The concurrency and propertyOrder options were removed. Output key order is unspecified, including in values passed to checks. Handle required presentation or serialization order explicitly outside the parser."
 "effect/SchemaAST#ParseOptionsAnnotationId":
   replacement: "none"
   note: "Parse options are no longer schema annotations. Pass options when creating or calling a decoder or encoder; there is no annotation-based override for nested schemas."
@@ -414,7 +414,7 @@
   note: "Symbol annotation IDs were removed; use declaration codec annotation keys."
 "effect/SchemaAST#TypeLiteral":
   replacement: "SchemaAST.Objects"
-  note: "Use Objects(propertySignatures, indexSignatures, annotations?, checks?, encoding?, context?, encodingChecks?). Output order is configured with runtime ParseOptions.propertyOrder."
+  note: "Use Objects(propertySignatures, indexSignatures, annotations?, checks?, encoding?, context?, encodingChecks?). Output key order is unspecified; there is no property-order option."
 "effect/SchemaAST#TypeLiteralTransformation":
   replacement: "SchemaAST.Encoding"
   note: "Object transformations are encoding links; use Schema.encodeKeys for key mappings."

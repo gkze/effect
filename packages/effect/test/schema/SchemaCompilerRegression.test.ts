@@ -69,7 +69,7 @@ describe("compiler regression contracts", () => {
       const options: Array<SchemaAST.ParseOptions | undefined> = [
         undefined,
         { errors: "all" },
-        { propertyOrder: "original" }
+        { reportInput: true }
       ]
       for (const literal of [0, -0]) {
         const schemas = [

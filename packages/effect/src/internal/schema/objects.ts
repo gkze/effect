@@ -27,8 +27,7 @@ export type ParsedProperty = {
 
 /** @internal */
 export const hasDefaultObjectOptions = (options: SchemaAST.ParseOptions): boolean =>
-  options.errors !== "all" &&
-  options.onExcessProperty !== "error" && options.propertyOrder !== "original"
+  options.errors !== "all" && options.onExcessProperty !== "error"
 
 /** @internal */
 export function stepProperty(

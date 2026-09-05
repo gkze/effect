@@ -1,7 +1,7 @@
 import { assert, describe, it } from "@effect/vitest"
 import { Effect, Result, Schema, SchemaParser, SchemaRepresentation } from "effect"
 import { SchemaJITCompiler } from "effect/unstable/schema"
-import { deepStrictEqual, strictEqual } from "../utils/assert.ts"
+import { deepStrictEqual, strictEqual, throws } from "../utils/assert.ts"
 
 for (const compiled of [false, true]) {
   describe(compiled ? "compiled object options" : "interpreted object options", () => {
@@ -75,55 +75,44 @@ for (const compiled of [false, true]) {
       deepStrictEqual(SchemaParser.decodeUnknownSync(schema)({ 1: { a: "a", b: 1 } }), { 1: { a: "a" } })
     })
 
-    it("propagates runtime order to nested objects and checks", () => {
+    it("passes stripped nested objects to checks", () => {
       const child = Schema.Struct({ a: Schema.String, b: Schema.String })
-        .check(Schema.makeFilter((value) => Object.keys(value)[0] === "b"))
+        .check(Schema.makeFilter((value) => !Object.hasOwn(value, "extra")))
       const schema = prepare(Schema.Struct({ child, a: Schema.String }))
       const input = { a: "a", child: { b: "b", a: "a", extra: true } }
-      const output = SchemaParser.decodeUnknownSync(schema)(input, { propertyOrder: "original" })
-      deepStrictEqual(Object.keys(output), ["a", "child"])
-      deepStrictEqual(Object.keys(output.child), ["b", "a"])
-      strictEqual(SchemaParser.is(schema)(input), false)
-      strictEqual(SchemaParser.is(schema, { propertyOrder: "original" })(input), true)
-      strictEqual(SchemaParser.is(schema, { propertyOrder: "none" })(input), false)
-      deepStrictEqual(
-        Object.keys(
-          SchemaParser.encodeUnknownSync(schema)(output, {
-            propertyOrder: "original"
-          }).child
-        ),
-        ["b", "a"]
-      )
+      const output = SchemaParser.decodeUnknownSync(schema)(input)
+      deepStrictEqual(output, { a: "a", child: { a: "a", b: "b" } })
+      strictEqual(SchemaParser.is(schema)(input), true)
+      strictEqual(SchemaParser.is(schema, { onExcessProperty: "error" })(input), false)
+      deepStrictEqual(SchemaParser.encodeUnknownSync(schema)(output), output)
     })
 
-    it("honors per-call order overrides without changing the cached decoder", () => {
+    it("honors per-call excess-property overrides without changing the cached decoder", () => {
       const schema = prepare(Schema.Struct({ a: Schema.String, b: Schema.String }))
       const input = { b: "b", a: "a", extra: true }
-      const decode = SchemaParser.decodeUnknownSync(schema, { propertyOrder: "original" })
-      deepStrictEqual(Object.keys(decode(input)), ["b", "a"])
-      deepStrictEqual(Object.keys(decode(input, { propertyOrder: "none" })), ["a", "b"])
-      deepStrictEqual(Object.keys(decode(input)), ["b", "a"])
+      const decode = SchemaParser.decodeUnknownSync(schema, { onExcessProperty: "error" })
+      throws(() => decode(input))
+      deepStrictEqual(decode(input, { onExcessProperty: "ignore" }), { a: "a", b: "b" })
+      throws(() => decode(input))
       const defaultDecode = SchemaParser.decodeUnknownSync(schema)
-      deepStrictEqual(Object.keys(defaultDecode(input)), ["a", "b"])
-      deepStrictEqual(Object.keys(defaultDecode(input, { propertyOrder: "original" })), ["b", "a"])
-      deepStrictEqual(Object.keys(defaultDecode(input)), ["a", "b"])
+      deepStrictEqual(defaultDecode(input), { a: "a", b: "b" })
+      throws(() => defaultDecode(input, { onExcessProperty: "error" }))
+      deepStrictEqual(defaultDecode(input), { a: "a", b: "b" })
     })
 
-    it("propagates runtime order through arrays, unions and transformed fields", () => {
+    it("decodes and encodes transformed fields inside arrays and unions", () => {
       const child = Schema.Struct({ a: Schema.NumberFromString, b: Schema.String })
       const schema = prepare(Schema.Array(Schema.Union([child, Schema.Boolean])))
       const input = [{ b: "b", a: "1" }]
-      const output = SchemaParser.decodeUnknownSync(schema)(input, { propertyOrder: "original" })
+      const output = SchemaParser.decodeUnknownSync(schema)(input)
       deepStrictEqual(output, [{ b: "b", a: 1 }])
-      deepStrictEqual(Object.keys(output[0]), ["b", "a"])
-      const encoded = SchemaParser.encodeUnknownSync(schema)(output, { propertyOrder: "original" })
+      const encoded = SchemaParser.encodeUnknownSync(schema)(output)
       deepStrictEqual(encoded, input)
-      deepStrictEqual(Object.keys(encoded[0]), ["b", "a"])
     })
 
-    it("retains new record keys when restoring original order", () => {
+    it("retains transformed record keys", () => {
       const schema = prepare(Schema.Record(Schema.Trim, Schema.NumberFromString))
-      deepStrictEqual(SchemaParser.decodeUnknownSync(schema)({ " a ": "1" }, { propertyOrder: "original" }), { a: 1 })
+      deepStrictEqual(SchemaParser.decodeUnknownSync(schema)({ " a ": "1" }), { a: 1 })
     })
 
     it("keeps the empty struct's non-nullish contract", () => {
@@ -131,8 +120,7 @@ for (const compiled of [false, true]) {
       for (const input of [1, "a", false, [], {}]) {
         strictEqual(
           SchemaParser.decodeUnknownSync(schema)(input, {
-            onExcessProperty: "error",
-            propertyOrder: "original"
+            onExcessProperty: "error"
           }),
           input
         )
@@ -149,16 +137,14 @@ for (const compiled of [false, true]) {
         deepStrictEqual(yield* SchemaParser.decodeUnknownEffect(array)(["a", "b"]), ["a", "b"])
       }))
 
-    it.effect("preserves runtime order after an asynchronous property", () =>
+    it.effect("retains decoded fields after an asynchronous property", () =>
       Effect.gen(function*() {
         const value = Schema.String.pipe(
           Schema.middlewareDecoding((decode) => Effect.flatMap(Effect.yieldNow, () => decode))
         )
         const schema = prepare(Schema.Struct({ a: value, b: Schema.String }))
-        const output = yield* SchemaParser.decodeUnknownEffect(schema)({ b: "b", a: "a" }, {
-          propertyOrder: "original"
-        })
-        deepStrictEqual(Object.keys(output), ["b", "a"])
+        const output = yield* SchemaParser.decodeUnknownEffect(schema)({ b: "b", a: "a" })
+        deepStrictEqual(output, { a: "a", b: "b" })
       }))
   })
 }
@@ -179,19 +165,6 @@ it("does not build detailed failures inside validate", () => {
   strictEqual(reads, 1)
 })
 
-it("applies runtime order after mapping fields and projecting the AST", () => {
-  const source = Schema.Struct({ a: Schema.NumberFromString, b: Schema.String })
-  const schema = source.mapFields((fields) => fields)
-  const decoded = SchemaParser.decodeUnknownSync(schema)({ b: "b", a: "1" }, { propertyOrder: "original" })
-  deepStrictEqual(Object.keys(decoded), ["b", "a"])
-  const typeDecoded = SchemaParser.decodeUnknownSync(Schema.toType(schema))(decoded, { propertyOrder: "original" })
-  deepStrictEqual(Object.keys(typeDecoded), ["b", "a"])
-  const encoded = SchemaParser.decodeUnknownSync(Schema.toEncoded(schema))({ b: "b", a: "1" }, {
-    propertyOrder: "original"
-  })
-  deepStrictEqual(Object.keys(encoded), ["b", "a"])
-})
-
 it("round-trips options through the structural representation", () => {
   const schema = Schema.Union([
     Schema.Struct({ a: Schema.String }),
@@ -200,39 +173,6 @@ it("round-trips options through the structural representation", () => {
   const document = SchemaRepresentation.toRepresentation(schema.ast)
   const rebuilt = SchemaRepresentation.fromRepresentation(document, { revivers: [] })
   deepStrictEqual(SchemaRepresentation.toRepresentation(rebuilt.ast), document)
-})
-
-it("applies runtime order to both class extension forms", () => {
-  class Base extends Schema.Class<Base>("OrderedBase")({ a: Schema.String }) {}
-  class Fields extends Base.extend<Fields>("OrderedFields")({ b: Schema.String }) {}
-  class Struct extends Base.extend<Struct>("OrderedStruct")(
-    Schema.Struct({ b: Schema.String })
-  ) {}
-  for (const schema of [Fields, Struct]) {
-    const output = SchemaParser.decodeUnknownSync(schema)({ b: "b", a: "a" }, { propertyOrder: "original" })
-    deepStrictEqual(Object.keys(output), ["b", "a"])
-  }
-})
-
-it("propagates runtime order when renaming encoded keys", () => {
-  const schema = Schema.Struct({ a: Schema.String, b: Schema.String })
-    .pipe(Schema.encodeKeys({ a: "first" }))
-  deepStrictEqual(
-    Object.keys(
-      SchemaParser.decodeUnknownSync(schema)({ b: "b", first: "a" }, {
-        propertyOrder: "original"
-      })
-    ),
-    ["b", "a"]
-  )
-  deepStrictEqual(
-    Object.keys(
-      SchemaParser.encodeUnknownSync(schema)({ b: "b", a: "a" }, {
-        propertyOrder: "original"
-      })
-    ),
-    ["b", "first"]
-  )
 })
 
 it("omits implicit closure but retains explicit index value constraints in JSON Schema", () => {

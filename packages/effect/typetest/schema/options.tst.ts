@@ -3,15 +3,14 @@ import type { SchemaAST } from "effect"
 import { describe, expect, it } from "tstyche"
 
 describe("runtime and AST options", () => {
-  it("keeps excess handling and output order at runtime", () => {
+  it("keeps excess handling at runtime without order or concurrency options", () => {
     expect<SchemaAST.ParseOptions["onExcessProperty"]>().type.toBe<"ignore" | "error" | undefined>()
-    expect<SchemaAST.ParseOptions["propertyOrder"]>().type.toBe<"none" | "original" | undefined>()
-    expect<Extract<keyof SchemaAST.ParseOptions, "concurrency">>().type.toBe<never>()
+    expect<Extract<keyof SchemaAST.ParseOptions, "propertyOrder" | "concurrency">>().type.toBe<never>()
     const schema = Schema.Struct({ a: Schema.String })
     expect<Extract<keyof SchemaAST.Objects, "options">>().type.toBe<never>()
-    expect(SchemaParser.decodeUnknownSync(schema, { propertyOrder: "original" })({ a: "a" }))
+    expect(SchemaParser.decodeUnknownSync(schema, { onExcessProperty: "error" })({ a: "a" }))
       .type.toBe<{ readonly a: string }>()
-    expect(SchemaParser.is(schema, { propertyOrder: "original" })).type.toBe<
+    expect(SchemaParser.is(schema, { onExcessProperty: "error" })).type.toBe<
       <I>(input: I) => input is I & { readonly a: string }
     >()
     expect(Schema.Record(Schema.String, Schema.Number).Type)

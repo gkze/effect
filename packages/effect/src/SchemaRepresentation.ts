@@ -2386,8 +2386,8 @@ export function toMultiDocument(document: Document): MultiDocument {
  * **Details**
  *
  * Objects without index signatures omit `additionalProperties` by default.
- * Index value constraints remain explicit. Runtime excess-property and
- * property-order settings do not affect the generated document.
+ * Index value constraints remain explicit. Runtime excess-property settings
+ * do not affect the generated document.
  *
  * **Gotchas**
  *

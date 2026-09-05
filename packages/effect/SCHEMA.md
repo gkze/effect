@@ -197,8 +197,8 @@ parser role or retain a private interpreted copy of a compiled parser.
 `SchemaParser.is(schema, options)` always checks `SchemaAST.toType(schema.ast)`.
 It uses the generated `is` operation when available, otherwise it runs
 `validate` and reduces its result to a boolean. The options are captured when
-the type guard is created. Runtime `onExcessProperty`, `propertyOrder`,
-and checks have the same meaning as in decoding. `disableChecks: true` is an
+the type guard is created. Runtime `onExcessProperty` and checks have the same
+meaning as in decoding. `disableChecks: true` is an
 explicitly unsafe optimization: the caller takes responsibility for the type
 narrowing. There is no second parser cache or separately exposed compiled
 schema.
@@ -230,8 +230,39 @@ This snapshot is checked in so compiler regressions appear as numeric changes in
 the Git diff. Keep scenario names, units, environment, and measurement settings
 unchanged when updating it. Lower values are better.
 
-The two runtime tables below retain their dated cross-library snapshots. The
-subsequent remediation comparison records the current worktree against HEAD.
+##### Latest paired Moltar comparison, 2026-09-05
+
+This comparison measures removal of `propertyOrder` against `8ab3423e70`.
+Both sides use public `SchemaParser` APIs on Node 24.12.0, V8 13.6, Apple M3.
+Each case uses nine fresh process pairs, 500 ms measurement, 150 ms warmup,
+and batch 256, with alternating base/worktree order.
+
+| Compiled case                 | Before (ns/op) | After (ns/op) |
+| ----------------------------- | -------------: | ------------: |
+| `parseSafe`, valid            |            9.1 |           5.6 |
+| `parseSafe`, extra property   |            9.0 |           5.6 |
+| `parseSafe`, invalid          |         3015.7 |        2994.3 |
+| `assertLoose`, valid          |            3.6 |           3.6 |
+| `assertLoose`, extra property |            3.6 |           3.6 |
+| `assertLoose`, invalid        |            3.1 |           3.1 |
+| First use, `parseSafe`        |         9874.3 |        8892.5 |
+| First use, `assertLoose`      |         9324.7 |        8779.6 |
+
+Paired valid-decode time decreases 37.95%, with a 95% interval of
+28.44–42.93%. Extra-property decoding also improves. First-use time decreases
+10.11% for decoding and 5.40% for boolean validation. Invalid decoding and
+steady-state boolean validation are inconclusive; no case is classified as a
+regression. Removing the generated ordering branch restores V8 inlining in
+this benchmark without runtime flags or changes to the Moltar fixtures.
+
+Reproduce with `pnpm runtimeperf-compare moltar-parse-safe --implementation
+effect-compiled --rounds 9 --time 500 --warmup-time 150` and the same command
+for `moltar-assert-loose`. Both reports measured worktree diff
+`5f3c541b60759a31d36b2946f8a64a78e79e5cd939d1a33b815f4a08134d9550`, before this
+documentation update. Bundle, memory, interpreted throughput and Zod were not
+remeasured for this removal; the following tables retain historical snapshots.
+
+##### Historical cross-library snapshots
 
 - Moltar snapshot date: 2026-09-04
 - Environment: Node 24.12.0, V8 13.6, Apple M3
@@ -282,10 +313,11 @@ of 300 ms after 100 ms warmup and covered the full worktree diff, including the
 removal of AST-local parse options and concurrency as well as the subsequent
 simplifications. Snapshot deltas alone do not establish a performance regression.
 
-##### Remediation comparison, 2026-09-05
+##### Historical remediation comparison, 2026-09-05
 
-This snapshot predates the restoration of runtime `propertyOrder`. Runtime,
-bundle and memory figures below have not been remeasured for that restoration.
+This snapshot predates the restoration and subsequent removal of runtime
+`propertyOrder`. The figures below are historical, not the current branch's
+bundle or memory measurements.
 
 Paired comparisons use `0a6e55fecd` as base and the remediation worktree as head,
 through public SchemaParser APIs. Moltar uses nine 500 ms rounds after 150 ms
@@ -1206,23 +1238,18 @@ no fixed field and no index signature selects it. Each applicable index
 signature still validates its value. Invalid values are not excess keys.
 `Struct({})` retains its special non-nullish contract, matching TypeScript `{}`.
 
-Configure output order through runtime `ParseOptions`:
+Object property order is unspecified. Decoding and encoding do not guarantee
+preservation of input key order, including in nested Structs, Records and
+StructWithRest. There is no guarantee of schema declaration order either.
+This also applies to the decoded values received by checks, including through
+`SchemaParser.is`.
 
-```ts
-const schema = Schema.Struct({ a: Schema.String, b: Schema.String })
-const decode = Schema.decodeUnknownSync(schema, {
-  propertyOrder: "original"
-})
-```
-
-`propertyOrder: "original"` retains input
-key order and appends newly created keys in output order; JavaScript's integer
-and symbol key ordering still applies. The default `"none"` leaves output
-order unspecified. The option propagates to nested objects, including Records
-and StructWithRest, and determines the object order observed by checks. It is
-available to decoders, encoders, and `SchemaParser.is`. Decoder and encoder
-calls can override the options supplied when creating them. No ordering policy
-is stored in the AST, in constructor options, or in structural representations.
+The `propertyOrder` parse option has been removed. Remove it from parser
+configuration. If presentation or serialization requires a specific order,
+retain the required ordering information and arrange the parsed values
+explicitly. Checks that previously relied on `propertyOrder: "original"` need
+to be revised; reordering the final output does not restore the order those
+checks observe.
 
 `Union.options` is an optional immutable-by-contract object containing `mode`,
 defaulting to `"anyOf"`. Normal AST projection and reconstruction copy it.
@@ -5439,7 +5466,7 @@ By default, a schema produces a draft-2020-12 JSON Schema.
 Objects without index signatures omit `additionalProperties` by default.
 Explicit index constraints remain: `Record(String, Number)` constrains all
 string-keyed values, and pattern index signatures constrain their matching
-keys. Runtime `onExcessProperty` and `propertyOrder` do not affect generation.
+keys. Runtime `onExcessProperty` does not affect generation.
 The existing `additionalProperties` generation override remains available when
 you explicitly want a different JSON Schema policy.
 OpenAI and Anthropic structured-output adapters request closed objects

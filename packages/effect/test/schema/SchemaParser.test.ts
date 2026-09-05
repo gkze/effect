@@ -342,14 +342,14 @@ describe("SchemaParser", () => {
       strictEqual(SchemaParser.is(schema, { disableChecks: true })("a"), true)
     })
 
-    it("should honor propertyOrder for checks that inspect decoded output", () => {
+    it("should pass decoded output to object checks", () => {
       const schema = Schema.Struct({ a: Schema.String, b: Schema.String }).check(
-        Schema.makeFilter((value) => Object.keys(value)[0] === "b")
+        Schema.makeFilter((value) => !Object.hasOwn(value, "extra"))
       )
-      const input = { b: "b", a: "a" }
+      const input = { b: "b", a: "a", extra: true }
 
-      strictEqual(SchemaParser.is(schema)(input), false)
-      strictEqual(SchemaParser.is(schema, { propertyOrder: "original" })(input), true)
+      strictEqual(SchemaParser.is(schema)(input), true)
+      strictEqual(SchemaParser.is(schema, { onExcessProperty: "error" })(input), false)
     })
 
     it("should throw an error when the cause is not an Issue", () => {

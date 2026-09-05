@@ -165,14 +165,6 @@ const hasExcessProperties = (
   return Reflect.ownKeys(input).some((key) => !covered.has(key))
 }
 
-const orderProperties = (input: object, output: Record<PropertyKey, unknown>): Record<PropertyKey, unknown> => {
-  const ordered: Record<PropertyKey, unknown> = {}
-  for (const key of [...Reflect.ownKeys(input), ...Reflect.ownKeys(output)]) {
-    if (Object.hasOwn(output, key)) assignDecodedProperty(ordered, key, output[key])
-  }
-  return ordered
-}
-
 const constant = (emitter: Emitter, value: unknown): string => {
   const cached = emitter.constantIndexes.get(value)
   if (cached !== undefined) return `C[${cached}]`
@@ -495,10 +487,6 @@ const emitBase = (
         `if(typeof ${input}!=="object"||${input}===null||Array.isArray(${input}))return I`
       )
       statements.push(`if(o!==D&&o.onExcessProperty==="error"&&E(${constant(emitter, ast)},${input},o))return I`)
-      const order = (output: string): string =>
-        needsValue
-          ? `(o!==D&&o.propertyOrder==="original"?O(${input},${output}):${output})`
-          : output
       const hasOptional = ast.propertySignatures.some((property) => isOptional(property.type))
       if (needsValue && ast.propertySignatures.length > 0 && !hasOptional) {
         const output = variable(emitter)
@@ -514,7 +502,7 @@ const emitBase = (
         })
         statements.push(`const ${output}={${properties.join(",")}}`)
         if (ast.indexSignatures.length > 0) emitIndexes(ast, input, output, statements, emitter, true)
-        return order(output)
+        return output
       }
       const output = needsValue ? variable(emitter) : undefined
       if (output !== undefined) statements.push(`const ${output}={}`)
@@ -535,7 +523,7 @@ const emitBase = (
         )
       }
       if (ast.indexSignatures.length > 0) emitIndexes(ast, input, output, statements, emitter, needsValue)
-      return order(output ?? input)
+      return output ?? input
     }
     case "Union": {
       const memberValues = ast.types.map(lookupMemberValues)
@@ -845,7 +833,6 @@ function compileDetailedObjects(ast: SchemaAST.Objects): DetailedDecoder {
     const output: Record<PropertyKey, unknown> = {}
     const errorsAll = options.errors === "all"
     let issues: [SchemaIssue.Issue, ...Array<SchemaIssue.Issue>] | undefined
-    let inputKeys: ReadonlyArray<PropertyKey> | undefined
     const indexKeys = indexes.length > 0 && options.onExcessProperty === "error"
       ? indexes.map((index) => SchemaAST.getIndexSignatureKeys(record, index.signature.parameter, options))
       : undefined
@@ -856,8 +843,7 @@ function compileDetailedObjects(ast: SchemaAST.Objects): DetailedDecoder {
           for (const key of keys) coveredKeys.add(key)
         }
       }
-      inputKeys = Reflect.ownKeys(record)
-      for (const key of inputKeys) {
+      for (const key of Reflect.ownKeys(record)) {
         if (coveredKeys.has(key)) continue
         const issue = new SchemaIssue.Pointer(
           [key],
@@ -930,7 +916,6 @@ function compileDetailedObjects(ast: SchemaAST.Objects): DetailedDecoder {
       }
     }
     if (issues !== undefined) return fail(new SchemaIssue.Composite(ast, issues, input, options))
-    if (options.propertyOrder === "original") return orderProperties(record, output)
     return output
   }
 }
@@ -1197,7 +1182,7 @@ const makeValidate = (
   const source = `"use strict";${emitter.helpers.join(";")};${emitter.initializers.join(";")};return function(i,o=D){${
     emitter.statements.join(";")
   };return ${output}}`
-  const factory = makeFunction("I", "C", "K", "T", "U", "G", "D", "E", "O", source)
+  const factory = makeFunction("I", "C", "K", "T", "U", "G", "D", "E", source)
   return factory?.(
     invalid,
     emitter.constants,
@@ -1206,8 +1191,7 @@ const makeValidate = (
     SchemaAST.getCandidates,
     SchemaAST.getIndexSignatureKeys,
     SchemaAST.defaultParseOptions,
-    hasExcessProperties,
-    orderProperties
+    hasExcessProperties
   )
 }
 class CompiledDecoderImpl {

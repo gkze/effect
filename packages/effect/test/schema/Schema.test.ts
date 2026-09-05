@@ -585,48 +585,6 @@ Missing key
       )
     })
 
-    describe("propertyOrder", () => {
-      it("preserves the order of explicitly modeled extra properties", () => {
-        const schema = Schema.StructWithRest(Schema.Struct({ a: Schema.String, b: Schema.String }), [
-          Schema.Record(Schema.String, Schema.String)
-        ])
-        const input = { c: "c", b: "b", a: "a", d: "d" }
-        const output = Schema.decodeUnknownSync(schema)(input, { propertyOrder: "original" })
-        deepStrictEqual(output, input)
-        deepStrictEqual(Object.keys(output), ["c", "b", "a", "d"])
-      })
-
-      it("all required fields", () => {
-        const schema = Schema.Struct({
-          a: Schema.String,
-          b: Schema.String
-        })
-
-        const input = { c: "c", b: "b", a: "a", d: "d" }
-        const output = Schema.decodeUnknownSync(schema)(input, {
-          propertyOrder: "original"
-        })
-        deepStrictEqual(Object.keys(output), ["b", "a"])
-      })
-
-      it("optional field with default", () => {
-        const schema = Schema.Struct({
-          a: Schema.String.pipe(Schema.encode({
-            decode: SchemaGetter.withDefault(Effect.succeed("default-a")),
-            encode: SchemaGetter.passthrough()
-          })),
-          b: Schema.String
-        })
-
-        const input = { c: "c", b: "b", d: "d" }
-        const output = Schema.decodeUnknownSync(schema)(input, {
-          propertyOrder: "original"
-        })
-        deepStrictEqual(Object.keys(output), ["b", "a"])
-        strictEqual(output.a, "default-a")
-      })
-    })
-
     describe("onExcessProperty", () => {
       it("error", async () => {
         const schema = Schema.Struct({

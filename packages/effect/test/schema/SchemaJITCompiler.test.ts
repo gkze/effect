@@ -81,12 +81,11 @@ describe("SchemaJITCompiler", () => {
     strictEqual(rejectExcess({ value: "a", extra: true }), false)
 
     const checked = Schema.Struct({ a: Schema.String, b: Schema.String }).check(
-      Schema.makeFilter((value, _ast, options) => options.reportInput === true && Object.keys(value)[0] === "b")
+      Schema.makeFilter((value, _ast, options) => options.reportInput === true && !Object.hasOwn(value, "extra"))
     )
-    const input = { b: "b", a: "a" }
-    strictEqual(SchemaParser.is(checked, { propertyOrder: "original", reportInput: true })(input), true)
-    strictEqual(SchemaParser.is(checked, { reportInput: true })(input), false)
-    strictEqual(SchemaParser.is(checked, { propertyOrder: "original" })(input), false)
+    const input = { b: "b", a: "a", extra: true }
+    strictEqual(SchemaParser.is(checked, { reportInput: true })(input), true)
+    strictEqual(SchemaParser.is(checked)(input), false)
     strictEqual(SchemaParser.is(checked, { disableChecks: true })(input), true)
   })
 
@@ -243,7 +242,6 @@ describe("SchemaJITCompiler", () => {
         {},
         { errors: "first" },
         { onExcessProperty: "ignore" },
-        { propertyOrder: "none" },
         { reportInput: true },
         { disableChecks: true }
       ] as const
