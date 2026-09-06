@@ -12,7 +12,10 @@ function makeConstructorParser(descriptor: SchemaAST.ConstructorDescriptor, reso
     if (input === InternalParser.missing) return InternalParser.missingExit
     if (descriptor.isConstructed(input)) return InternalParser.succeed(input)
     const result = (sourceParser ??= resolve(descriptor.link.to))(input, options)
-    return applyTransformation(result, descriptor.link.transformation, options)
+    return Effect.flatMapEager(
+      applyTransformation(result, descriptor.link.transformation, options),
+      InternalParser.fromOptionExit
+    )
   }
 }
 

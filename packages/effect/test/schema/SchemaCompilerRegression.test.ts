@@ -1,10 +1,97 @@
 import { assert, describe, it } from "@effect/vitest"
-import { Effect, Exit, Option, Result, Schema, SchemaAST, SchemaParser, SchemaTransformation } from "effect"
+import {
+  Effect,
+  Exit,
+  Option,
+  Result,
+  Schema,
+  SchemaAST,
+  SchemaGetter,
+  SchemaParser,
+  SchemaTransformation
+} from "effect"
 import * as CompilerRegistry from "effect/internal/schema/compilerRegistry"
 import { SchemaCompiler, SchemaJITCompiler } from "effect/unstable/schema"
 import { deepStrictEqual, strictEqual, throws } from "../utils/assert.ts"
 
 describe("compiler regression contracts", () => {
+  it.effect("preserves missing and present undefined through eager and suspended transformations", () =>
+    Effect.gen(function*() {
+      for (const suspended of [false, true]) {
+        const seen: Array<Option.Option<unknown>> = []
+        const schema = Schema.Struct({
+          value: Schema.Unknown.pipe(
+            Schema.decode({
+              decode: new SchemaGetter.Getter<unknown, unknown>((input) => {
+                seen.push(input)
+                const output = Option.isNone(input) || input.value === "omit" ? Option.none() : Option.some(undefined)
+                return suspended ? Effect.sync(() => output) : Effect.succeed(output)
+              }),
+              encode: SchemaGetter.passthrough()
+            }),
+            Schema.optionalKey
+          )
+        })
+        for (const compiled of [false, true]) {
+          if (compiled) SchemaJITCompiler.enable(schema.ast)
+          seen.length = 0
+          const decode = SchemaParser.decodeUnknownEffect(schema)
+          deepStrictEqual(yield* decode({}), {})
+          deepStrictEqual(yield* decode({ value: "omit" }), {})
+          deepStrictEqual(yield* decode({ value: "present" }), { value: undefined })
+          deepStrictEqual(seen, [Option.none(), Option.some("omit"), Option.some("present")])
+        }
+      }
+    }))
+
+  it.effect("continues encoding checkpoints after middleware recovery without replaying transformations", () =>
+    Effect.gen(function*() {
+      for (const suspended of [false, true]) {
+        const events: Array<string> = []
+        const schema = Schema.String.pipe(
+          Schema.decodeTo(
+            Schema.Number.check(Schema.isGreaterThan(0)),
+            SchemaTransformation.transform({
+              decode: (input) => {
+                events.push("first")
+                return Number(input)
+              },
+              encode: String
+            })
+          ),
+          Schema.middlewareDecoding((effect) =>
+            Effect.catchEager(effect, () => {
+              events.push("recover")
+              return suspended ? Effect.sync(() => Option.some(1)) : Effect.succeed(Option.some(1))
+            })
+          ),
+          Schema.decodeTo(
+            Schema.String,
+            SchemaTransformation.transform({
+              decode: (input) => {
+                events.push("last")
+                return String(input)
+              },
+              encode: Number
+            })
+          )
+        )
+        for (const compiled of [false, true]) {
+          if (compiled) SchemaJITCompiler.enable(schema.ast)
+          const decode = SchemaParser.decodeUnknownEffect(schema)
+          events.length = 0
+          strictEqual(yield* decode("2"), "2")
+          deepStrictEqual(events, ["first", "last"])
+          events.length = 0
+          strictEqual(yield* decode("-1"), "1")
+          deepStrictEqual(events, ["first", "recover", "last"])
+          events.length = 0
+          strictEqual(yield* decode(false), "1")
+          deepStrictEqual(events, ["recover", "last"])
+        }
+      }
+    }))
+
   it.effect("resolved parsers return Effects containing their actual output", () =>
     Effect.gen(function*() {
       const object = { value: "a" }
@@ -23,9 +110,67 @@ describe("compiler regression contracts", () => {
         for (const compiled of [false, true]) {
           if (compiled) SchemaJITCompiler.enable(schema.ast)
           const parser = CompilerRegistry.resolve(schema.ast)
-          const output = yield* Effect.map(parser(input, SchemaAST.defaultParseOptions), (value) => value)
+          const effect = parser(input, SchemaAST.defaultParseOptions)
+          strictEqual(Effect.isEffect(effect), true)
+          const output = yield* Effect.map(effect, (value) => value)
           strictEqual(Object.is(output, expected), true)
+          const publicEffect = SchemaParser.decodeUnknownEffect(schema)(input)
+          strictEqual(Effect.isEffect(publicEffect), true)
+          strictEqual(Object.is(yield* publicEffect, expected), true)
         }
+      }
+    }))
+
+  it.effect("retains public success values across subsequent and reentrant parser calls", () =>
+    Effect.gen(function*() {
+      let reenter: (input: unknown) => string
+      const schema = Schema.String.check(
+        Schema.makeFilter((value) => value !== "first" || reenter("nested") === "nested")
+      )
+      for (const compiled of [false, true]) {
+        if (compiled) SchemaJITCompiler.enable(schema.ast)
+        const decode = SchemaParser.decodeUnknownEffect(schema)
+        const decodeSync = SchemaParser.decodeUnknownSync(schema)
+        reenter = decodeSync
+        const first = decode("first")
+        const second = decode("second")
+        strictEqual(
+          yield* Effect.map(first, (value) => {
+            strictEqual(decodeSync("nested"), "nested")
+            return value
+          }),
+          "first"
+        )
+        strictEqual(yield* second, "second")
+        strictEqual(yield* first, "first")
+      }
+    }))
+
+  it.effect("preserves unchanged fields before and after asynchronous transformations", () =>
+    Effect.gen(function*() {
+      const number = Schema.String.pipe(Schema.decodeTo(Schema.Number, {
+        decode: new SchemaGetter.Getter((input) => Effect.yieldNow.pipe(Effect.as(Option.map(input, Number)))),
+        encode: SchemaGetter.transform(String)
+      }))
+      const tuple = Schema.Tuple([Schema.String, number, Schema.Undefined]).check(
+        Schema.makeFilter((value) => value[0] === "before" && value[1] === 42 && value[2] === undefined)
+      )
+      const struct = Schema.Struct({ before: Schema.String, middle: number, after: Schema.Undefined }).check(
+        Schema.makeFilter((value) => value.before === "before" && value.middle === 42 && value.after === undefined)
+      )
+      for (const compiled of [false, true]) {
+        if (compiled) {
+          SchemaJITCompiler.enable(tuple.ast)
+          SchemaJITCompiler.enable(struct.ast)
+        }
+        deepStrictEqual(
+          yield* SchemaParser.decodeUnknownEffect(tuple)(["before", "42", undefined]),
+          ["before", 42, undefined]
+        )
+        deepStrictEqual(
+          yield* SchemaParser.decodeUnknownEffect(struct)({ before: "before", middle: "42", after: undefined }),
+          { before: "before", middle: 42, after: undefined }
+        )
       }
     }))
 

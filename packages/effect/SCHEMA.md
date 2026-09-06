@@ -173,10 +173,14 @@ Different options do not require another dynamic compilation, and the default
 ignore path does not scan excess keys.
 
 JIT and installed decoders use the same `CompiledDecoder` operation types,
-without a separate `.default` function property. Detailed decoders and
-interpreted parsers return ordinary Effects whose successes contain the actual
-output, including when it is identical to the input. There is no unchanged-input
-success sentinel to interpret before composing the result with Effect APIs.
+without a separate `.default` function property. `SchemaParser.Parser`
+implementations and installed `decode` operations return ordinary Effects
+whose successes contain the actual output.
+
+Internal parsers return ordinary Effects too. There is no `Unchanged` result,
+fake success, or mutable reused success. This accepts per-value success
+allocations while the common interpreter, JIT, and AOT architecture is being
+established. The shared AST cache stores parsers, never parse results.
 
 Pass parse options when creating or calling a parser. They apply throughout the
 parse; annotations cannot override them. Composite schemas parse children
@@ -231,13 +235,114 @@ Emitter, generated-source, and factory-initialization bugs are reported rather
 than hidden by that fallback. Exceptions raised during parsing still follow
 the ordinary Effect defect behavior.
 
+#### Ahead-of-time compilation
+
+`effect/unstable/schema/SchemaAOTCompiler` provides an experimental build-time
+`compile(asts)` function accepting a readonly array of ASTs. It returns a
+JavaScript ES module exporting `install(asts)`. The generated module receives
+the corresponding runtime ASTs in the same order, so
+checks, symbols, transformations, and middleware retain their runtime identity.
+They are not serialized. Neither compilation nor importing the generated module
+installs a decoder; calling `install` writes generated entries into the same
+registry used by JIT and `SchemaCompiler.set`.
+
+Export the root array from the schema module for use during both generation and
+installation. A single schema uses `[Person.ast]`; an empty array produces an
+installer that does nothing. Shared dependencies and repeated roots are emitted
+and installed once by AST identity.
+
+```ts
+export const roots = [Person.ast, Order.ast] as const
+```
+
+For example, a build script can generate one module for these roots:
+
+```ts
+import * as SchemaAOTCompiler from "effect/unstable/schema/SchemaAOTCompiler"
+import { writeFile } from "node:fs/promises"
+import { roots } from "./schemas.js"
+
+await writeFile("./schemas.decoders.js", SchemaAOTCompiler.compile(roots))
+```
+
+The application then installs it before first parser execution:
+
+```ts
+import * as SchemaParser from "effect/SchemaParser"
+import { install } from "./schemas.decoders.js"
+import { Person, roots } from "./schemas.js"
+
+install(roots)
+const decodePerson = SchemaParser.decodeUnknownSync(Person)
+```
+
+JIT and AOT share the source emitter and runtime support. JIT evaluates emitted
+source with `Function`; AOT writes those functions into the JavaScript module.
+Generated modules import `effect/unstable/schema/SchemaCompiler/runtime`, not
+the emitter or either compiler. They work when dynamic code generation is
+disabled. This support module is version-coupled to the generated output.
+
+The initial implementation statically emits validators and composed Struct
+decoders. Detailed diagnostic closures and transformation orchestration still
+initialize lazily in shared runtime code. This is not full ahead-of-time
+preparation of every operation. It preserves the same issues, runtime options,
+and single execution of transformations and middleware as JIT.
+
+Regenerate after changing the schema definition or Effect version. Installation
+trusts the array length and root order, and the ASTs' structure and sharing; it
+does not check compatibility with the build-time roots. It installs generated
+statically reachable dependencies as well as the roots when supported. Suspend thunks are not forced,
+and unsupported nodes retain interpreted parsing. No late JIT is needed for
+these fallbacks. Type-side and flipped ASTs have separate registry identities:
+generate and install those ASTs separately when needed. Existing parser closures
+keep previously captured entries after late installation, as with `set`.
+
 #### Performance snapshot
 
 This snapshot is checked in so compiler regressions appear as numeric changes in
 the Git diff. Keep scenario names, units, environment, and measurement settings
 unchanged when updating it. Lower values are better.
 
-##### Latest paired cleanup comparison, 2026-09-05
+##### Architecture-first AOT spike, 2026-09-06
+
+The `Unchanged` experiment has been retired. Parsers again return ordinary
+Effects. Its allocation savings are deferred until after review of the common
+interpreter, JIT, and AOT architecture. Previous experiment measurements are not
+measurements of the current implementation.
+
+At measurement, validation passed 2,372 Schema tests and 2,363 tests with global JIT
+enabled. The nine installation tests require JIT initially disabled. Generated
+modules also run in a fresh Node process with dynamic code generation disabled
+and an import guard that rejects codegen and JIT dependencies. AOT throughput,
+bundle size and retained heap have not been measured in this architecture-first
+spike.
+
+Focused public `SchemaParser` comparisons use `0854dbbca3` as the baseline,
+which already returns ordinary Effects, against the current worktree. Five
+fresh process pairs alternate base/head order, with 300 ms measurement and
+100 ms warmup. Moltar uses batch 256. Environment: Node 24.12.0, V8 13.6,
+Apple M3, macOS arm64. Values are median ns/op; deltas and 95% intervals use
+paired ratios, not the ratio of the displayed medians.
+
+| Case                                     | HEAD (ns/op) | Worktree (ns/op) | Paired delta |       95% interval | Classification |
+| ---------------------------------------- | -----------: | ---------------: | -----------: | -----------------: | -------------- |
+| Moltar `parseSafe`, valid, JIT           |          6.1 |              9.3 |      +54.32% | +29.37% to +58.93% | regression     |
+| Moltar `assertLoose`, valid, JIT         |          3.7 |              3.6 |       -2.00% | -35.44% to +15.20% | inconclusive   |
+| Struct with transformations, interpreted |       1933.3 |           1931.0 |       -0.05% | -23.36% to +29.65% | inconclusive   |
+| Struct with transformations, JIT         |       1342.9 |           1357.8 |       -0.40% |  -6.17% to +42.81% | inconclusive   |
+
+The `parseSafe` regression remains open for the later optimization pass.
+Repeating it with nine pairs, 500 ms measurement and 150 ms warmup confirms
+6.0 to 9.3 ns/op, paired +56.62%, 95% interval +51.17% to +62.85%.
+The other results do not establish performance equivalence. No additional
+optimization was introduced in response to these measurements.
+
+Measured worktree diff hash:
+`165fe76e299d0a7cbfd206ca61d93c276aca840001eea26c4affcbbf99766ed4`.
+Raw reports are under `tmp/runtimeperf/results`, UTC timestamps
+`2026-09-06T05-43` through `05-45`.
+
+##### Previous cleanup comparison, 2026-09-05
 
 This comparison removes `.default` and `sameExit` against `5296eb53d6`, which
 already removed `propertyOrder`. The cleanup keeps ordinary Effect results and

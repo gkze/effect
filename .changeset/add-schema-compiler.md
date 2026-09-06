@@ -7,6 +7,7 @@ Add a shared `SchemaCompiler` decoder registry and the experimental `SchemaJITCo
 - Import `effect/unstable/schema/SchemaJITCompiler/enable` to enable lazy JIT compilation globally.
 - Call `SchemaJITCompiler.enable(ast)` to enable compilation for one AST and its decoding dependencies.
 - Call `SchemaCompiler.set(ast, decoder)` to install a trusted JIT or AOT decoder in the same registry.
+- Call `SchemaAOTCompiler.compile(asts)` with a readonly array of ASTs at build time to generate a JavaScript module exporting `install(asts)`. Pass the corresponding runtime ASTs in the same order; use `[ast]` for a single schema. Shared dependencies and repeated roots are installed once by identity. Generated modules use the shared registry and run without dynamic function construction. Regenerate them when the schema or Effect version changes. Suspend contents and unsupported nodes retain interpreted parsing; diagnostic closures and transformation orchestration still initialize lazily.
 
 Decoder operations are resolved lazily, including operations supplied through accessors. Install the compiler before the first execution of parsers you want to accelerate: parsers that have already captured an entry continue using it. Environments that disallow dynamic function generation use the interpreter; code-generation bugs are reported rather than silently selecting the interpreter.
 
