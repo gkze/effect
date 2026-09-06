@@ -63,10 +63,7 @@ export interface Validate {
  * @since 4.0.0
  */
 export interface Decode {
-  (
-    input: unknown,
-    options: SchemaAST.ParseOptions
-  ): Effect.Effect<unknown, SchemaIssue.Issue, any>
+  (input: unknown, options: SchemaAST.ParseOptions): Effect.Effect<unknown, SchemaIssue.Issue, any>
 }
 
 /**
@@ -94,6 +91,7 @@ export interface CompiledDecoder {
  *
  * A later call for the same AST replaces the previous entry. Parser functions
  * that have already resolved and retained an earlier entry are not updated.
+ * This also applies when subsequent calls use different parse options.
  * The decoder is trusted to implement the semantics of the supplied AST.
  * Installation does not evaluate operation getters. Each operation, including
  * an absent optional operation, is resolved once when first needed. Accessors

@@ -38,7 +38,7 @@ const makeFunction = (...parameters: Array<string>): Function | undefined => {
 const makeValidate = (ast: SchemaAST.AST, needsValue: boolean): Validate | undefined => {
   const emitted = Codegen.emitValidate(ast, needsValue)
   const factory = makeFunction("C", "R", emitted.source)
-  return factory?.(emitted.constants, Runtime)
+  return factory?.(emitted.bindings.map((binding) => binding.value), Runtime)
 }
 
 const makeTypeDecoder = (ast: SchemaAST.AST, emitIs: boolean): CompiledDecoder =>
@@ -52,28 +52,28 @@ const makeComposedObjectDecode = (ast: SchemaAST.Objects, resolve: ResolveParser
 }
 
 const makeLocalParser = (ast: SchemaAST.AST, resolve: ResolveParser): Parser => {
-  const emission = Codegen.shouldCompileParser(ast, true) ? Codegen.getEmission(ast, 0, true) : 0
-  if (emission !== 0) return prepareDecode(makeTypeDecoder(ast, emission === 2))
+  const selection = Codegen.select(ast, true)
+  if (selection._tag === "Type") return prepareDecode(makeTypeDecoder(ast, selection.outputFree))
   return Runtime.applyChecks(
     ast,
-    ast._tag === "Objects" && ast.indexSignatures.length === 0
-      ? makeComposedObjectDecode(ast, resolve) ?? ast.getParser(resolve)
+    selection._tag === "Object"
+      ? makeComposedObjectDecode(selection.ast, resolve) ?? ast.getParser(resolve)
       : ast.getParser(resolve)
   )
 }
 
 /** @internal */
 export const compile = (ast: SchemaAST.AST, resolve: ResolveParser): CompiledDecoder | undefined => {
-  if (!Codegen.shouldCompileParser(ast) || !supportsDynamicFunction()) return undefined
-  const emission = Codegen.getEmission(ast)
-  if (emission !== 0) return makeTypeDecoder(ast, emission === 2)
-  if (ast.encoding !== undefined) {
-    return Runtime.makeEncodingDecoder(ast, resolve, () => makeLocalParser(ast, resolve))
+  const selection = Codegen.select(ast)
+  if (selection._tag === "Fallback" || !supportsDynamicFunction()) return undefined
+  switch (selection._tag) {
+    case "Type":
+      return makeTypeDecoder(ast, selection.outputFree)
+    case "Encoding":
+      return Runtime.makeEncodingDecoder(ast, resolve, () => makeLocalParser(ast, resolve))
+    case "Object":
+      return Runtime.fromDecode(() =>
+        makeComposedObjectDecode(selection.ast, resolve) ?? Runtime.makeComposedObjectFallback(selection.ast, resolve)
+      )
   }
-  if (ast._tag === "Objects" && Codegen.canCompileComposedObject(ast)) {
-    return Runtime.fromDecode(() =>
-      makeComposedObjectDecode(ast, resolve) ?? Runtime.makeComposedObjectFallback(ast, resolve)
-    )
-  }
-  return undefined
 }

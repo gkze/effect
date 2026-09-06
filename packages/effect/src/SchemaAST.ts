@@ -22,6 +22,7 @@ import * as InternalRecord from "./internal/record.ts"
 import * as InternalAnnotations from "./internal/schema/annotations.ts"
 import * as InternalSchemaCause from "./internal/schema/cause.ts"
 import { wrapPropertyKeyIssue } from "./internal/schema/cause.ts"
+import * as Diagnostics from "./internal/schema/diagnostics.ts"
 import {
   hasDefaultObjectOptions,
   type ObjectParserState,
@@ -2261,12 +2262,7 @@ export const Arrays: new(
       tailThreshold: number,
       index: number
     ): { readonly ast: AST; readonly parser: SchemaParser.Parser } {
-      if (index < elementLen) {
-        return elements![index]
-      } else if (index >= tailThreshold) {
-        return rest![index - tailThreshold + 1]
-      }
-      return rest![0]
+      return Diagnostics.getTupleElement(elements!, rest!, tailThreshold, index)
     }
 
     return Effect.fnUntracedEager(function*(input, options) {
@@ -2302,8 +2298,7 @@ export const Arrays: new(
       // ---------------------------------------------
       if (ast.rest.length === 0 && len > elementLen) {
         for (let i = elementLen; i <= len - 1; i++) {
-          const unexpected = new SchemaIssue.UnexpectedKey(ast, input[i], options)
-          const issue = new SchemaIssue.Pointer([i], unexpected)
+          const issue = Diagnostics.unexpectedKey(ast, i, input[i], options)
           if (options.errors === "all") {
             if (state.issues) state.issues.push(issue)
             else state.issues = [issue]
@@ -2379,7 +2374,7 @@ const parseArray = iterateEager<{
     } else {
       const p = s.getParser(s.tailThreshold, i)
       if (isOptional(p.ast)) return
-      const issue = new SchemaIssue.Pointer([i], new SchemaIssue.MissingKey(p.ast.context?.annotations))
+      const issue = Diagnostics.missingKey(i, p.ast)
       if (s.options.errors === "all") {
         if (s.issues) s.issues.push(issue)
         else s.issues = [issue]
@@ -2656,13 +2651,10 @@ export const Objects: new(
   ): SchemaParser.Parser {
     // oxlint-disable-next-line @typescript-eslint/no-this-alias
     const ast = this
-    const expectedKeys: Array<PropertyKey> = []
-    for (const ps of ast.propertySignatures) {
-      expectedKeys.push(typeof ps.name === "number" ? globalThis.String(ps.name) : ps.name)
-    }
+    const expectedKeys = Diagnostics.getExpectedKeys(ast)
     const hasProperties = expectedKeys.length
     const indexCount = ast.indexSignatures.length
-    let expectedKeysSet = hasProperties && indexCount ? new Set(expectedKeys) : undefined
+    let expectedKeysSet = hasProperties && indexCount ? new Set<PropertyKey>(expectedKeys) : undefined
     // ---------------------------------------------
     // handle empty struct
     // ---------------------------------------------
@@ -2692,7 +2684,7 @@ export const Objects: new(
       if (k2 !== InternalParser.missing && value !== InternalParser.missing) {
         if (
           hasProperties &&
-          (expectedKeysSet!.has(key) || expectedKeysSet!.has(typeof k2 === "number" ? globalThis.String(k2) : k2))
+          (expectedKeysSet!.has(key) || expectedKeysSet!.has(Diagnostics.normalizeKey(k2)))
         ) return Exit.void
         InternalRecord.assignProperty(s.out, k2, value)
       }
@@ -2782,19 +2774,13 @@ export const Objects: new(
         : undefined
       if (onExcessPropertyError) {
         expectedKeysSet ??= new Set(expectedKeys)
-        const coveredKeys = indexKeys ? new Set(expectedKeysSet) : expectedKeysSet
-        if (indexKeys) {
-          for (const keys of indexKeys) {
-            for (const key of keys) coveredKeys.add(key)
-          }
-        }
+        const coveredKeys = Diagnostics.getCoveredKeys(expectedKeysSet, indexKeys)
         const inputKeys = Reflect.ownKeys(record)
         for (let i = 0; i < inputKeys.length; i++) {
           const key = inputKeys[i]
           if (!coveredKeys.has(key)) {
             // key is unexpected
-            const unexpected = new SchemaIssue.UnexpectedKey(ast, record[key], options)
-            const issue = new SchemaIssue.Pointer([key], unexpected)
+            const issue = Diagnostics.unexpectedKey(ast, key, record[key], options)
             if (errorsAllOption) {
               if (state.issues) {
                 state.issues.push(issue)

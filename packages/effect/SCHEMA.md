@@ -97,7 +97,7 @@ decodeUser({ id: 1, name: "Ada" })
 #### One cache, interchangeable parsers
 
 `SchemaCompiler` owns a single registry keyed by AST. `SchemaParser`, the
-interpreter, the JIT compiler, and future AOT compilers all use this registry.
+interpreter, the JIT compiler, and the AOT compiler all use this registry.
 Encoding uses the same mechanism with the encoded-side AST. A compiler does
 not introduce a parallel cache, a compiled schema type, or an alternative
 parsing API.
@@ -106,22 +106,25 @@ On the first execution of a parser, the registry:
 
 1. looks up the AST in its central cache;
 2. asks the installed compiler for an optimized implementation when no parser is cached;
-3. stores exactly one parser for the AST: either interpreted or compiled.
+3. stores exactly one entry for the AST: either interpreted or installed.
 
 ```text
 SchemaParser API
        |
        v
-SchemaCompiler: WeakMap<AST, Parser>
+SchemaCompiler: WeakMap<AST, Entry>
        |
-       +-- interpreted parser
-       |
-       `-- compiled parser
-             |
+       `-- entry
+             +-- origin: interpreted or installed
+             +-- parser: Effect-returning adapter
              +-- is?(input, options) -> boolean
              +-- validate?(input, options) -> decoded value or INVALID
-             `-- decode(input, options) -> decoded value or SchemaIssue
+             `-- decode(input, options) -> Effect<value, SchemaIssue>
 ```
+
+Every entry has this shape. An interpreted entry supplies only `decode`; JIT,
+AOT, and manually installed decoders may also supply fast paths. Provenance and
+operations belong to the entry, not to hidden properties on parser functions.
 
 There are three ways to populate the same registry:
 
@@ -138,7 +141,8 @@ There are three ways to populate the same registry:
 The selective APIs accept an AST rather than a Schema. Decoding uses
 `schema.ast`; encoding uses `SchemaAST.flip(schema.ast)`. Parser closures that
 already resolved an older registry entry keep it, so late installation is safe
-but may not accelerate those existing closures.
+but may not accelerate those existing closures. A synchronous decoder retains
+the same entry whether a call omits parse options or supplies overrides.
 
 `SchemaCompiler.set` is a trusted low-level API. Every operation receives the
 active `ParseOptions`; `validate` reports failure with
@@ -150,6 +154,9 @@ Installation does not evaluate `is`, `validate`, or `decode` accessors. The
 registry resolves each operation once when a consumer first needs it, including
 absent optional operations. Getters retain the installed object as their
 receiver. Public installation and JIT installation share this behavior.
+This normalization happens only in the registry entry: compiler factories
+provide the lazy operations without a second layer of memoization. Resolving a
+child parser does not initialize its operations until parsing reaches it.
 
 This replacement is transparent to every `SchemaParser` API that resolves the
 AST. A supported type-side AST has up to three independently lazy operations:
@@ -181,6 +188,13 @@ Internal parsers return ordinary Effects too. There is no `Unchanged` result,
 fake success, or mutable reused success. This accepts per-value success
 allocations while the common interpreter, JIT, and AOT architecture is being
 established. The shared AST cache stores parsers, never parse results.
+
+The interpreter and detailed compiler runtime share check evaluation, numeric
+key normalization, excess-key coverage, tuple element selection, and missing /
+unexpected-key issue construction. Their traversal loops remain separate:
+the detailed decoder visits its children directly, without restarting their
+fast validation through the registry. A failed type-side validation therefore
+adds one detailed pass, not another replay at every nested node.
 
 Pass parse options when creating or calling a parser. They apply throughout the
 parse; annotations cannot override them. Composite schemas parse children
@@ -282,6 +296,13 @@ Generated modules import `effect/unstable/schema/SchemaCompiler/runtime`, not
 the emitter or either compiler. They work when dynamic code generation is
 disabled. This support module is version-coupled to the generated output.
 
+Both compilers use the same selection rules for type-side validation, encodings,
+composed objects, and fallback, including local encoding checkpoints. The emitter
+keeps each captured value paired with its runtime AST reference: JIT supplies the
+value, while AOT emits the reference. Runtime helper names are checked against
+the shared support module's TypeScript type. Generated JavaScript still needs
+execution tests; these checks do not type-check the emitted program itself.
+
 The initial implementation statically emits validators and composed Struct
 decoders. Detailed diagnostic closures and transformation orchestration still
 initialize lazily in shared runtime code. This is not full ahead-of-time
@@ -299,235 +320,96 @@ keep previously captured entries after late installation, as with `set`.
 
 #### Performance snapshot
 
-This snapshot is checked in so compiler regressions appear as numeric changes in
-the Git diff. Keep scenario names, units, environment, and measurement settings
-unchanged when updating it. Lower values are better.
+Measured on 2026-09-06 at `69f1bd97a0`: Node 24.12.0, V8
+13.6.233.17-node.37, Apple M3, macOS arm64. Runtime measurements use public
+`SchemaParser` APIs. Keep scenario names, units, and measurement settings stable
+when updating these tables. Lower values are better.
 
-##### Architecture-first AOT spike, 2026-09-06
+##### Moltar
 
-The `Unchanged` experiment has been retired. Parsers again return ordinary
-Effects. Its allocation savings are deferred until after review of the common
-interpreter, JIT, and AOT architecture. Previous experiment measurements are not
-measurements of the current implementation.
+Median ns/op from nine processes per case, 500 ms measurement, 150 ms warmup,
+batch 256. AOT uses the same worker and data with dynamic code generation disabled.
+Its fixture has a different call-site shape; sub-10 ns differences between JIT
+and AOT are not a general ranking.
 
-At measurement, validation passed 2,372 Schema tests and 2,363 tests with global JIT
-enabled. The nine installation tests require JIT initially disabled. Generated
-modules also run in a fresh Node process with dynamic code generation disabled
-and an import guard that rejects codegen and JIT dependencies. AOT throughput,
-bundle size and retained heap have not been measured in this architecture-first
-spike.
+| Case                          | Interpreted |    JIT |    AOT |
+| ----------------------------- | ----------: | -----: | -----: |
+| `parseSafe`, valid            |       353.9 |    5.8 |    5.7 |
+| `parseSafe`, extra property   |       344.0 |    5.9 |    5.7 |
+| `parseSafe`, invalid          |      3177.2 | 3039.3 | 3049.4 |
+| `assertLoose`, valid          |       364.1 |    3.6 |    3.3 |
+| `assertLoose`, extra property |       350.6 |    3.6 |    3.3 |
+| `assertLoose`, invalid        |       123.5 |    3.1 |    1.7 |
 
-Focused public `SchemaParser` comparisons use `0854dbbca3` as the baseline,
-which already returns ordinary Effects, against the current worktree. Five
-fresh process pairs alternate base/head order, with 300 ms measurement and
-100 ms warmup. Moltar uses batch 256. Environment: Node 24.12.0, V8 13.6,
-Apple M3, macOS arm64. Values are median ns/op; deltas and 95% intervals use
-paired ratios, not the ratio of the displayed medians.
+Schema construction plus first use, median µs/op. AOT was not measured in this
+fixture.
 
-| Case                                     | HEAD (ns/op) | Worktree (ns/op) | Paired delta |       95% interval | Classification |
-| ---------------------------------------- | -----------: | ---------------: | -----------: | -----------------: | -------------- |
-| Moltar `parseSafe`, valid, JIT           |          6.1 |              9.3 |      +54.32% | +29.37% to +58.93% | regression     |
-| Moltar `assertLoose`, valid, JIT         |          3.7 |              3.6 |       -2.00% | -35.44% to +15.20% | inconclusive   |
-| Struct with transformations, interpreted |       1933.3 |           1931.0 |       -0.05% | -23.36% to +29.65% | inconclusive   |
-| Struct with transformations, JIT         |       1342.9 |           1357.8 |       -0.40% |  -6.17% to +42.81% | inconclusive   |
+| Case          | Interpreted |   JIT |
+| ------------- | ----------: | ----: |
+| `parseSafe`   |        6.46 | 10.12 |
+| `assertLoose` |        7.22 | 10.65 |
 
-The `parseSafe` regression remains open for the later optimization pass.
-Repeating it with nine pairs, 500 ms measurement and 150 ms warmup confirms
-6.0 to 9.3 ns/op, paired +56.62%, 95% interval +51.17% to +62.85%.
-The other results do not establish performance equivalence. No additional
-optimization was introduced in response to these measurements.
+##### Other schema shapes
 
-Measured worktree diff hash:
-`165fe76e299d0a7cbfd206ca61d93c276aca840001eea26c4affcbbf99766ed4`.
-Raw reports are under `tmp/runtimeperf/results`, UTC timestamps
-`2026-09-06T05-43` through `05-45`.
+The `schema-compiler` suite, median ns/op from five processes per case,
+300 ms measurement, 100 ms warmup, and shared calibrated batches.
 
-##### Previous cleanup comparison, 2026-09-05
+| Scenario                         | Interpreted |       JIT |
+| -------------------------------- | ----------: | --------: |
+| `strict-record-1024-valid`       |    228285.0 |  217743.9 |
+| `strict-record-4096-valid`       |    759221.3 |  755089.7 |
+| `strict-record-4096-invalid`     |    756843.9 | 1478428.8 |
+| `array-100-valid`                |      1489.6 |     127.8 |
+| `array-100-invalid-last`         |      6636.5 |    4530.0 |
+| `tuple-rest-valid`               |       646.5 |      40.1 |
+| `optional-struct-valid`          |      1280.6 |      19.1 |
+| `record-valid`                   |      4851.0 |     673.3 |
+| `template-record-valid`          |     10820.5 |    4108.9 |
+| `struct-with-record-valid`       |      1751.6 |     740.7 |
+| `number-record-valid`            |      5752.8 |    5081.8 |
+| `transformed-key-record-valid`   |      4466.8 |    4527.9 |
+| `encoding-checked-struct-valid`  |       980.0 |      31.5 |
+| `literal-100-valid-last`         |        34.4 |      10.0 |
+| `literal-100-invalid`            |      3240.8 |    3383.3 |
+| `tagged-union-100-valid-last`    |       132.5 |      27.3 |
+| `tagged-union-100-invalid`       |      3230.2 |    3665.6 |
+| `checked-string-valid`           |        20.0 |       8.8 |
+| `template-literal-valid`         |       178.2 |      48.6 |
+| `transformation-struct-valid`    |      2532.8 |    1569.2 |
+| `transformation-root-valid`      |        44.4 |      43.8 |
+| `transformation-root-invalid`    |      4076.2 |    3611.7 |
+| `transformation-uppercase-valid` |        52.8 |      52.8 |
+| `transformation-output-invalid`  |      3559.4 |    3587.0 |
+| `middleware-struct-valid`        |      2555.8 |     392.9 |
+| `recursive-node-valid`           |     15465.7 |   10567.8 |
 
-This comparison removes `.default` and `sameExit` against `5296eb53d6`, which
-already removed `propertyOrder`. The cleanup keeps ordinary Effect results and
-one compiled-operation interface; it has confirmed performance costs below.
-Both sides use public `SchemaParser` APIs on Node 24.12.0, V8 13.6, Apple M3.
-Moltar uses nine fresh process pairs, 500 ms measurement, 150 ms warmup, and
-batch 256, with alternating base/worktree order. Values are median ns/op.
+##### Memory and first-use CPU
 
-| Compiled case                 | Before (ns/op) | After (ns/op) |
-| ----------------------------- | -------------: | ------------: |
-| `parseSafe`, valid            |            5.7 |           5.9 |
-| `parseSafe`, extra property   |            5.9 |           6.3 |
-| `parseSafe`, invalid          |         3019.5 |        3044.2 |
-| `assertLoose`, valid          |            3.8 |           3.7 |
-| `assertLoose`, extra property |            3.6 |           3.6 |
-| `assertLoose`, invalid        |            3.1 |           3.1 |
-| First use, `parseSafe`        |         8873.3 |        8846.9 |
-| First use, `assertLoose`      |         9219.4 |        8754.7 |
+Seven processes per mode, each retaining 1,000 distinct four-field Structs,
+their inputs, and public sync decoders. Two forced GCs at each snapshot:
+before construction, after construction, and after first use.
 
-All eight Moltar comparisons are inconclusive under the runner's existing
-thresholds. This does not establish equivalence: valid decode has a paired
-change of +1.95%, with a 95% interval of -4.93% to +4.03%; the extra-property
-case has +2.16%, with an interval of -2.48% to +10.90%.
+Retained heap, B/schema. Total includes construction and first-use allocations;
+module imports, the static AOT module, RSS, and build-time compilation are excluded.
 
-A separate first-stage experiment removed only `.default`. Extra-property
-decoding regressed from 5.6 to 9.1 ns, a paired +62.43% with a 95% interval
-of +60.97% to +63.86%. The table above measures the combined cleanup, which
-also removes unchanged-input branches from the public adapters. The two
-experiments are each paired against HEAD, not against one another.
+| Mode        | Construction | First use | Total |
+| ----------- | -----------: | --------: | ----: |
+| Interpreted |         1895 |      1685 |  3580 |
+| JIT         |         1902 |      1314 |  3216 |
+| AOT         |         1895 |      3583 |  5478 |
 
-Broader cases use five fresh process pairs, 300 ms measurement, 100 ms warmup,
-and a shared calibrated batch per base/head pair. Scenario names below have
-the `schema-compiler-` prefix. Values are median ns/op.
+First use within the batch, median µs/schema. Includes AOT installation and lazy
+operation initialization; excludes schema construction and GC. Process CPU can
+exceed wall time. Warm CPU was not measured separately.
 
-| Scenario                      | Interpreted before | Interpreted after | Compiled before | Compiled after |
-| ----------------------------- | -----------------: | ----------------: | --------------: | -------------: |
-| `array-100-valid`             |              710.5 |            1410.1 |           127.3 |          129.9 |
-| `tuple-rest-valid`            |              425.3 |             592.4 |            45.3 |           37.6 |
-| `record-valid`                |             4091.8 |            5464.1 |           680.3 |          683.4 |
-| `tagged-union-100-valid-last` |              117.1 |             132.3 |            27.7 |           28.0 |
-| `checked-string-valid`        |               19.7 |              22.4 |             8.2 |            8.0 |
-| `transformation-root-valid`   |               42.4 |              46.7 |            37.0 |           45.5 |
-| `transformation-struct-valid` |             2055.3 |            2577.2 |          1231.5 |         1604.6 |
-| `middleware-struct-valid`     |             1913.6 |            2526.6 |           414.5 |          409.9 |
-| `recursive-node-valid`        |            13531.2 |           14511.9 |          8308.0 |         8872.7 |
+| Mode        | Wall time | Process CPU |
+| ----------- | --------: | ----------: |
+| Interpreted |      2.22 |        4.55 |
+| JIT         |      6.64 |       10.51 |
+| AOT         |     28.35 |       28.94 |
 
-Seven broader comparisons are classified as regressions: interpreted Array
-(+98.45%), Record (+29.86%), transformation Struct (+32.87%), middleware Struct
-(+33.24%) and recursive node (+7.27%); compiled root transformation (+22.53%)
-and transformation Struct (+24.88%). The other eleven are inconclusive, not
-confirmed improvements. Percentages are medians of paired ratios, not ratios
-of the displayed medians. The interpreted Array interval is +86.02% to
-+115.99%; the compiled transformation Struct interval is +13.08% to +51.88%.
-
-Reproduce with `pnpm runtimeperf-compare moltar-parse-safe --implementation
-effect-compiled --rounds 9 --time 500 --warmup-time 150` and the same command
-for `moltar-assert-loose`. For broader cases use `pnpm runtimeperf-compare
-schema-compiler-<scenario> --rounds 5 --time 300 --warmup-time 100`.
-All combined-cleanup reports measured worktree diff
-`78b1b5841eabf76cae09f3ad1976fbaef18ab32ef9847647db24305dc27e7481`, before this
-documentation update. The `.default`-only diff was
-`dcc0e411a622fa20163f65b4f071ed69d223aed1f3f005f49fb084389867beb1`.
-Bundle, retained memory and Zod were not remeasured; subsequent tables retain
-historical snapshots. No runtime flags or benchmark fixtures were changed.
-
-##### Historical cross-library snapshots
-
-- Moltar snapshot date: 2026-09-04
-- Environment: Node 24.12.0, V8 13.6, Apple M3
-- Libraries: Effect 4.0.0-rc.112, Zod 4.5.4
-- Runtime settings: 9 fresh processes, 500 ms measurement, 150 ms warmup;
-  Moltar scenarios use a shared batch of 256
-- Effect API: public `SchemaParser` functions only
-
-Run the Moltar snapshot with:
-
-```sh
-pnpm runtimeperf moltar-parse-safe --rounds 9 --time 500 --warmup-time 150
-pnpm runtimeperf moltar-assert-loose --rounds 9 --time 500 --warmup-time 150
-```
-
-| Scenario                           | Effect interpreted (ns/op) | Effect compiled (ns/op) | Zod compile (ns/op) |
-| ---------------------------------- | -------------------------: | ----------------------: | ------------------: |
-| `parseSafe`, valid                 |                      265.4 |                     5.4 |                 5.2 |
-| `parseSafe`, extra property        |                      266.8 |                     5.1 |                 5.3 |
-| `parseSafe`, invalid               |                     3000.0 |                  3070.0 |              3940.0 |
-| `assertLoose`, valid               |                      264.0 |                     3.6 |                 3.3 |
-| `assertLoose`, extra property      |                      266.1 |                     3.6 |                 3.3 |
-| `assertLoose`, invalid             |                      120.2 |                     3.1 |               211.0 |
-| Effect initialization, parseSafe   |                     6710.0 |                  8360.0 |                   — |
-| Zod initialization, parseSafe      |                          — |                       — |             34460.0 |
-| Effect initialization, assertLoose |                     6820.0 |                  8400.0 |                   — |
-| Zod initialization, assertLoose    |                          — |                       — |             46890.0 |
-
-The broader snapshot tracks arrays, tuples, encoding orchestration, and local
-fallback paths. It was refreshed on 2026-09-05 from the worktree based on
-`5ea366e01c`, using the same runtime settings above. Run each row by passing its
-scenario name to `pnpm runtimeperf` with those settings. Timings are medians;
-the final column is the median paired compiled/interpreted ratio.
-
-| Runtimeperf scenario                           | Interpreted (ns/op) | Compiled (ns/op) | Compiled / interpreted |
-| ---------------------------------------------- | ------------------: | ---------------: | ---------------------: |
-| `schema-compiler-array-100-valid`              |               715.9 |            126.2 |                  0.177 |
-| `schema-compiler-tuple-rest-valid`             |               426.1 |             37.7 |                  0.089 |
-| `schema-compiler-transformation-struct-valid`  |              1956.2 |           1206.7 |                  0.618 |
-| `schema-compiler-middleware-struct-valid`      |              1899.6 |            413.2 |                  0.219 |
-| `schema-compiler-recursive-node-valid`         |             13752.8 |           8344.2 |                  0.616 |
-| `schema-compiler-transformed-key-record-valid` |              3582.9 |           3521.6 |                  0.981 |
-| `schema-compiler-transformation-root-invalid`  |              3378.0 |           3503.6 |                  1.041 |
-
-A separate paired comparison against `5ea366e01c` measured interpreted Array
-and tuple time reductions of 22.32% and 11.83%. That comparison used five rounds
-of 300 ms after 100 ms warmup and covered the full worktree diff, including the
-removal of AST-local parse options and concurrency as well as the subsequent
-simplifications. Snapshot deltas alone do not establish a performance regression.
-
-##### Historical remediation comparison, 2026-09-05
-
-This snapshot predates the restoration and subsequent removal of runtime
-`propertyOrder`. The figures below are historical, not the current branch's
-bundle or memory measurements.
-
-Paired comparisons use `0a6e55fecd` as base and the remediation worktree as head,
-through public SchemaParser APIs. Moltar uses nine 500 ms rounds after 150 ms
-warmup, batch 256. The 46-case schema-compiler suite uses five 300 ms rounds
-after 100 ms warmup. Neither final run classifies a regression. This does not
-prove zero overhead; most intervals are inconclusive.
-
-| Compiled case                 | HEAD (ns/op) | Worktree (ns/op) |
-| ----------------------------- | -----------: | ---------------: |
-| `parseSafe`, valid            |          5.6 |              5.7 |
-| `parseSafe`, extra property   |          5.8 |              5.8 |
-| `parseSafe`, invalid          |       3060.0 |           3050.0 |
-| `assertLoose`, valid          |          3.6 |              3.6 |
-| `assertLoose`, extra property |          3.6 |              3.6 |
-| `assertLoose`, invalid        |          3.1 |              3.1 |
-| Moltar first use, decode      |       8560.0 |           8870.0 |
-| Moltar first use, is          |       8360.0 |           8760.0 |
-| Array, 100 valid elements     |        126.9 |            125.5 |
-| Record, numeric keys          |       4610.0 |           4650.0 |
-| Struct, 32 transformations    |       1200.0 |           1200.0 |
-| Struct middleware             |        414.5 |            405.6 |
-
-The number-key Record initially regressed because its local checkpoint compiled
-an unchecked Number. Reusing the root profitability criterion removed that
-regression while retaining the original AST for diagnostics. A dedicated
-nine-round check also found no classified regression. No mutable failure slot
-or call-shape workaround was introduced.
-
-Bundle sizes use the stable `schema-compiler.ts` and
-`schema-compiler-off.ts` fixtures in `packages/tools/bundle/fixtures`. Values
-are minified and gzipped decimal kilobytes, rounded independently from byte
-counts. This snapshot was refreshed on 2026-09-05 with `pnpm bundle-compare HEAD`
-against `0a6e55fecd`, covering the parsing-option and compiler corrections. Of
-34 stable fixtures, 17 grew, three became smaller and 14 were unchanged.
-Compiler-off grew by 0.08 KB and compiler-on by 0.19 KB. Run
-`pnpm bundle-compare HEAD~1` after a compiler commit to
-compare with the preceding commit.
-
-| Bundle fixture        | Size (KB) |
-| --------------------- | --------: |
-| Compiler not imported |     17.04 |
-| Compiler imported     |     22.20 |
-| Compiler increment    |      5.16 |
-
-The retained-memory probe was refreshed on 2026-09-05. It creates 1,000 distinct
-Structs with `id: Number`, `name: String`, `active: Boolean`, and `score: Number`,
-retaining each schema, input and public sync decoder. It measures the difference
-between two forced GCs before first use and two forced GCs after one valid
-decode. Values are medians of seven fresh processes per revision and mode, with
-alternating revision order. This is a new paired probe, not a continuation of
-the older memory series. Cold CPU is process-wide and may exceed wall time.
-
-| Cost after first valid decode, per schema | HEAD interpreted | Worktree interpreted | HEAD compiled | Worktree compiled |
-| ----------------------------------------- | ---------------: | -------------------: | ------------: | ----------------: |
-| Retained JavaScript heap                  |           1523 B |               1527 B |         714 B |             920 B |
-| V8 code and metadata                      |             48 B |                 51 B |         101 B |             119 B |
-| V8 bytecode and metadata                  |            6.3 B |                6.5 B |        16.2 B |            17.9 B |
-| Cold compile and decode wall time         |          1.71 µs |              1.79 µs |       4.90 µs |           4.97 µs |
-| Cold compile and decode process CPU       |          3.40 µs |              3.60 µs |       7.75 µs |           8.17 µs |
-
-HEAD here is `0a6e55fecd`. The compiler's retained heap increases about 206 B per
-schema. Lazy normalization and operation preparation preserve installation
-semantics but have a retention cost. Moving the preparation getter to a shared
-prototype reduced an intermediate increase of about 567 B per schema.
+Raw reports and probe sources are retained locally in
+`tmp/compiler-cleanup-69f1bd97a0/` and `tmp/runtimeperf/results/`.
 
 # Defining Elementary Schemas
 

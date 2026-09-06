@@ -75,7 +75,7 @@ if (process.argv[3] === "multiple") {
 assert.equal(suspendEvaluations, 0)
 
 for (const name of ["struct", "array", "tuple", "tagged", "record", "transformed", "transformedStruct", "middleware"]) {
-  assert.ok(CompilerRegistry.getCompiledDecoder(CompilerRegistry.resolve(schemas[name].ast)), name)
+  assert.equal(CompilerRegistry.resolve(schemas[name].ast).origin, "installed", name)
 }
 
 assert.deepEqual(snapshot(), interpreted)
@@ -99,6 +99,16 @@ assert.equal(SchemaParser.is(proof)({ value: "a" }), true)
 assert.equal(SchemaParser.is(proof)({ value: 1 }), false)
 assert.deepEqual(SchemaParser.decodeUnknownSync(schemas.proofArray)([{ value: "a", extra: true }]), [{ value: "a" }])
 assert.ok(Result.isFailure(SchemaParser.decodeUnknownResult(schemas.proofArray)([{ value: 1 }])))
+let invalidReads = 0
+assert.ok(Result.isFailure(
+  SchemaParser.decodeUnknownResult(schemas.proofArray)([{
+    get value() {
+      invalidReads++
+      return 1
+    }
+  }])
+))
+assert.equal(invalidReads, 2)
 
 assert.deepEqual(SchemaParser.decodeUnknownSync(lazy)({ value: "lazy" }), { value: "lazy" })
 assert.equal(suspendEvaluations, 1)

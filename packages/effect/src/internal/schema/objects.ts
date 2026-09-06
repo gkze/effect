@@ -6,6 +6,7 @@ import { iterateEager } from "../effect.ts"
 import { assignProperty } from "../record.ts"
 import { wrapPropertyKeyIssue } from "./cause.ts"
 import type { Parser } from "./compilerRegistry.ts"
+import { missingKey } from "./diagnostics.ts"
 import * as InternalParser from "./parser.ts"
 
 /** @internal */
@@ -43,7 +44,7 @@ export function stepProperty(
   }
   delete state.out[property.name]
   if (property.type.context?.isOptional) return
-  const issue = new SchemaIssue.Pointer([property.name], new SchemaIssue.MissingKey(property.type.context?.annotations))
+  const issue = missingKey(property.name, property.type)
   if (state.options.errors === "all") {
     if (state.issues) state.issues.push(issue)
     else state.issues = [issue]

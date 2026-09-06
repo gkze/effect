@@ -1,4 +1,7 @@
 import * as SchemaAST from "../../SchemaAST.ts"
+import type { runtime } from "../../unstable/schema/SchemaCompiler/runtime.ts"
+import { getEncodingChecks } from "./checks.ts"
+import { getExpectedKeys } from "./diagnostics.ts"
 
 const isOptional = (ast: SchemaAST.AST): boolean => ast.context?.isOptional ?? false
 
@@ -6,17 +9,17 @@ const maxGeneratedDepth = 256
 /** @internal */
 export const maxGeneratedNodes = 2048
 
-type Emission = 0 | 1 | 2
+type Emission = "unsupported" | "validate" | "is"
 
 /** @internal */
-export const getEmission = (
+const getEmission = (
   ast: SchemaAST.AST,
   depth = 0,
   local = false,
   budget = { remaining: maxGeneratedNodes }
 ): Emission => {
   // Count occurrences, not distinct ASTs: shared subgraphs are expanded by the emitter.
-  if (--budget.remaining < 0 || depth > maxGeneratedDepth || !local && ast.encoding !== undefined) return 0
+  if (--budget.remaining < 0 || depth > maxGeneratedDepth || !local && ast.encoding !== undefined) return "unsupported"
   switch (ast._tag) {
     case "Null":
     case "Undefined":
@@ -33,57 +36,57 @@ export const getEmission = (
     case "Boolean":
     case "Symbol":
     case "BigInt":
-      return 2
+      return "is"
     case "TemplateLiteral": {
       for (const part of ast.parts) {
-        if (getEmission(part, depth + 1, false, budget) === 0) return 0
+        if (getEmission(part, depth + 1, false, budget) === "unsupported") return "unsupported"
       }
-      return 2
+      return "is"
     }
     case "Arrays": {
       let isOutputFree = ast.checks === undefined
       for (const element of ast.elements) {
         const emission = getEmission(element, depth + 1, false, budget)
-        if (emission === 0) return 0
-        if (emission === 1) isOutputFree = false
+        if (emission === "unsupported") return "unsupported"
+        if (emission === "validate") isOutputFree = false
       }
       for (const element of ast.rest) {
         const emission = getEmission(element, depth + 1, false, budget)
-        if (emission === 0) return 0
-        if (emission === 1) isOutputFree = false
+        if (emission === "unsupported") return "unsupported"
+        if (emission === "validate") isOutputFree = false
       }
-      return isOutputFree ? 2 : 1
+      return isOutputFree ? "is" : "validate"
     }
     case "Objects": {
       let isOutputFree = ast.checks === undefined
       for (const property of ast.propertySignatures) {
         const emission = getEmission(property.type, depth + 1, false, budget)
-        if (emission === 0) return 0
-        if (emission === 1) isOutputFree = false
+        if (emission === "unsupported") return "unsupported"
+        if (emission === "validate") isOutputFree = false
       }
       for (const signature of ast.indexSignatures) {
         const key = getEmission(SchemaAST.parameterFromPropertyKey(signature.parameter), depth + 1, false, budget)
         const value = getEmission(signature.type, depth + 1, false, budget)
-        if (key === 0 || value === 0) return 0
-        if (key === 1 || value === 1) isOutputFree = false
+        if (key === "unsupported" || value === "unsupported") return "unsupported"
+        if (key === "validate" || value === "validate") isOutputFree = false
       }
-      return isOutputFree ? 2 : 1
+      return isOutputFree ? "is" : "validate"
     }
     case "Union": {
       let isOutputFree = ast.checks === undefined
       for (const type of ast.types) {
         const emission = getEmission(type, depth + 1, false, budget)
-        if (emission === 0) return 0
-        if (emission === 1) isOutputFree = false
+        if (emission === "unsupported") return "unsupported"
+        if (emission === "validate") isOutputFree = false
       }
-      return isOutputFree ? 2 : 1
+      return isOutputFree ? "is" : "validate"
     }
     default:
-      return 0
+      return "unsupported"
   }
 }
 
-const canEmit = (ast: SchemaAST.AST, depth = 0): boolean => getEmission(ast, depth) !== 0
+const canEmit = (ast: SchemaAST.AST, depth = 0): boolean => getEmission(ast, depth) !== "unsupported"
 
 type Emitter = {
   readonly statements: Array<string>
@@ -91,8 +94,7 @@ type Emitter = {
   readonly initializers: Array<string>
   readonly decoderHelpers: Map<SchemaAST.AST, string>
   readonly unionHelpers: Map<SchemaAST.Union, string>
-  readonly constants: Array<unknown>
-  readonly references: Array<string>
+  readonly bindings: Array<Binding>
   readonly constantIndexes: Map<unknown, number>
   next: number
 }
@@ -113,9 +115,8 @@ const assignProperty = (output: string, key: string, value: string, name: Proper
 const constant = (emitter: Emitter, value: unknown, reference: string): string => {
   const cached = emitter.constantIndexes.get(value)
   if (cached !== undefined) return `C[${cached}]`
-  const index = emitter.constants.length
-  emitter.constants.push(value)
-  emitter.references.push(reference)
+  const index = emitter.bindings.length
+  emitter.bindings.push({ value, reference })
   emitter.constantIndexes.set(value, index)
   return `C[${index}]`
 }
@@ -138,19 +139,8 @@ const needsPresenceCheck = (ast: SchemaAST.AST): boolean => {
 const propertyNeedsPresenceCheck = (name: PropertyKey, ast: SchemaAST.AST): boolean =>
   name === "__proto__" || needsPresenceCheck(ast)
 
-const getEncodingChecks = (ast: SchemaAST.AST): SchemaAST.Checks | undefined => {
-  switch (ast._tag) {
-    case "Arrays":
-    case "Objects":
-    case "Union":
-      return ast.encodingChecks
-    default:
-      return undefined
-  }
-}
-
 /** @internal */
-export const shouldCompileParser = (ast: SchemaAST.AST, local = false): boolean => {
+const shouldCompileParser = (ast: SchemaAST.AST, local = false): boolean => {
   if (!local && ast.encoding !== undefined) return true
   if (ast.checks !== undefined || getEncodingChecks(ast) !== undefined) return true
   switch (ast._tag) {
@@ -269,12 +259,8 @@ const emitIndexes = (
     ? undefined
     : constant(
       emitter,
-      new Set(
-        ast.propertySignatures.map((property) =>
-          typeof property.name === "number" ? String(property.name) : property.name
-        )
-      ),
-      `new Set(${path}.propertySignatures.map(property=>typeof property.name==="number"?String(property.name):property.name))`
+      new Set(getExpectedKeys(ast)),
+      `new Set(${runtimeReference("getExpectedKeys")}(${path}))`
     )
   for (let signatureIndex = 0; signatureIndex < ast.indexSignatures.length; signatureIndex++) {
     const signature = ast.indexSignatures[signatureIndex]
@@ -299,7 +285,7 @@ const emitIndexes = (
         loop,
         emitter,
         true,
-        `R.parameterFromPropertyKey(${signaturePath}.parameter)`
+        `${runtimeReference("parameterFromPropertyKey")}(${signaturePath}.parameter)`
       )
     const value = variable(emitter)
     loop.push(`const ${value}=${input}[${key}]`)
@@ -571,17 +557,43 @@ const emitBase = (
 }
 
 /** @internal */
-export const canCompileComposedObject = (ast: SchemaAST.Objects): boolean =>
-  ast.encoding === undefined &&
-  ast.indexSignatures.length === 0 &&
-  ast.checks === undefined &&
-  ast.encodingChecks === undefined
+export type Selection =
+  | { readonly _tag: "Fallback" }
+  | { readonly _tag: "Type"; readonly ast: SchemaAST.AST; readonly outputFree: boolean }
+  | { readonly _tag: "Encoding"; readonly ast: SchemaAST.AST }
+  | { readonly _tag: "Object"; readonly ast: SchemaAST.Objects }
+
+/** @internal */
+export const select = (ast: SchemaAST.AST, local = false): Selection => {
+  if (!shouldCompileParser(ast, local)) return { _tag: "Fallback" }
+  const emission = getEmission(ast, 0, local)
+  if (emission !== "unsupported") return { _tag: "Type", ast, outputFree: emission === "is" }
+  if (!local && ast.encoding !== undefined) return { _tag: "Encoding", ast }
+  if (
+    ast._tag === "Objects" && ast.indexSignatures.length === 0 &&
+    (local || ast.checks === undefined && ast.encodingChecks === undefined)
+  ) {
+    return { _tag: "Object", ast }
+  }
+  return { _tag: "Fallback" }
+}
+
+/** @internal */
+export interface Binding {
+  readonly value: unknown
+  readonly reference: string
+}
+
+/** @internal */
+export const runtimeReference = (name: keyof typeof runtime): string => `R.${name}`
+
+const runtimeBindings = (aliases: Readonly<Record<string, keyof typeof runtime>>): string =>
+  `const {${Object.entries(aliases).map(([alias, name]) => `${name}:${alias}`).join(",")}}=R;`
 
 /** @internal */
 export const emitValidate = (ast: SchemaAST.AST, needsValue: boolean): {
   readonly source: string
-  readonly constants: ReadonlyArray<unknown>
-  readonly references: ReadonlyArray<string>
+  readonly bindings: ReadonlyArray<Binding>
 } => {
   const emitter: Emitter = {
     statements: [],
@@ -589,17 +601,25 @@ export const emitValidate = (ast: SchemaAST.AST, needsValue: boolean): {
     initializers: [],
     decoderHelpers: new Map(),
     unionHelpers: new Map(),
-    constants: [],
-    references: [],
+    bindings: [],
     constantIndexes: new Map(),
     next: 0
   }
   const output = emit(ast, "i", emitter.statements, emitter, needsValue, "ast")
-  const source =
-    `"use strict";const {invalid:I,failsChecks:K,matchesTemplateLiteral:T,getCandidates:U,getIndexSignatureKeys:G,defaultParseOptions:D,hasExcessProperties:E}=R;${
-      emitter.helpers.join(";")
-    };${emitter.initializers.join(";")};return function(i,o){${emitter.statements.join(";")};return ${output}}`
-  return { source, constants: emitter.constants, references: emitter.references }
+  const source = `"use strict";${
+    runtimeBindings({
+      I: "invalid",
+      K: "failsChecks",
+      T: "matchesTemplateLiteral",
+      U: "getCandidates",
+      G: "getIndexSignatureKeys",
+      D: "defaultParseOptions",
+      E: "hasExcessProperties"
+    })
+  }${emitter.helpers.join(";")};${emitter.initializers.join(";")};return function(i,o){${
+    emitter.statements.join(";")
+  };return ${output}}`
+  return { source, bindings: emitter.bindings }
 }
 
 /** @internal */
@@ -641,7 +661,21 @@ export const emitComposedObject = (ast: SchemaAST.Objects): string => {
     )
   }
   statements.push("return SU(out)")
-  return "\"use strict\";const {ast:T,properties:P,fallback:F}=context;const {defaultParseOptions:D,hasDefaultObjectOptions:O,missing:M,missingExit:MX,invalidTypeIssue:IT,assignDecodedProperty:AP,args:A,effectIsExit:X,resumeComposedObject:RSC,failComposedObjectProperty:W,failMissingComposedObjectProperty:N,succeed:SU,die:DIE}=R;return function(i,o){try{" +
+  return "\"use strict\";const {ast:T,properties:P,fallback:F}=context;" + runtimeBindings({
+    D: "defaultParseOptions",
+    O: "hasDefaultObjectOptions",
+    M: "missing",
+    MX: "missingExit",
+    IT: "invalidTypeIssue",
+    AP: "assignDecodedProperty",
+    A: "args",
+    X: "effectIsExit",
+    RSC: "resumeComposedObject",
+    W: "failComposedObjectProperty",
+    N: "failMissingComposedObjectProperty",
+    SU: "succeed",
+    DIE: "die"
+  }) + "return function(i,o){try{" +
     statements.join(";") +
     "}catch(e){return DIE(e)}}"
 }

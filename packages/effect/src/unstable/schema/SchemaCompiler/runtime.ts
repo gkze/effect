@@ -7,19 +7,21 @@
 import * as Effect from "../../../Effect.ts"
 import * as Exit from "../../../Exit.ts"
 import { effectIsExit } from "../../../internal/effect.ts"
+import { assignProperty } from "../../../internal/record.ts"
 import * as InternalSchemaCause from "../../../internal/schema/cause.ts"
+import { checkOutput, getEncodingChecks } from "../../../internal/schema/checks.ts"
 import {
   type CompiledDecoder,
-  getDirectParser,
   invalid,
   type Is,
   type Parser,
   prepareDecode,
-  resolve,
   type ResolveParser,
+  resolveParser as resolve,
   set,
   type Validate
 } from "../../../internal/schema/compilerRegistry.ts"
+import * as Diagnostics from "../../../internal/schema/diagnostics.ts"
 import { applyChecks } from "../../../internal/schema/interpreter.ts"
 import { hasDefaultObjectOptions, type ParsedProperty, resumeProperties } from "../../../internal/schema/objects.ts"
 import * as InternalParser from "../../../internal/schema/parser.ts"
@@ -40,29 +42,16 @@ const parameterFromPropertyKey = SchemaAST.parameterFromPropertyKey
 
 const isOptional = (ast: SchemaAST.AST): boolean => ast.context?.isOptional ?? false
 
-const getEncodingChecks = (ast: SchemaAST.AST): SchemaAST.Checks | undefined => {
-  switch (ast._tag) {
-    case "Arrays":
-    case "Objects":
-    case "Union":
-      return ast.encodingChecks
-    default:
-      return undefined
-  }
-}
-
 /** @internal */
 const hasExcessProperties = (
   ast: SchemaAST.Objects,
   input: Record<PropertyKey, unknown>,
   options: SchemaAST.ParseOptions
 ): boolean => {
-  const covered = new Set<PropertyKey>(
-    ast.propertySignatures.map((property) => typeof property.name === "number" ? String(property.name) : property.name)
+  const covered = Diagnostics.getCoveredKeys(
+    new Set(Diagnostics.getExpectedKeys(ast)),
+    ast.indexSignatures.map((index) => SchemaAST.getIndexSignatureKeys(input, index.parameter, options))
   )
-  for (const index of ast.indexSignatures) {
-    for (const key of SchemaAST.getIndexSignatureKeys(input, index.parameter, options)) covered.add(key)
-  }
   return Reflect.ownKeys(input).some((key) => !covered.has(key))
 }
 
@@ -118,43 +107,14 @@ const composite = (
 const pointer = (key: PropertyKey, failure: Failure): SchemaIssue.Pointer =>
   new SchemaIssue.Pointer([key], failure.issue)
 
-/** @internal */
-const assignDecodedProperty = (
-  output: Record<PropertyKey, unknown>,
-  key: PropertyKey,
-  value: unknown
-): void => {
-  if (key === "__proto__") {
-    Object.defineProperty(output, key, { value, writable: true, enumerable: true, configurable: true })
-  } else {
-    output[key] = value
-  }
-}
-
 function compileDetailed(ast: SchemaAST.AST): DetailedDecoder {
   const base = compileDetailedBase(ast)
-  const encodingChecks = getEncodingChecks(ast)
-  const checks = ast.checks
-  if (encodingChecks === undefined && checks === undefined) return base
+  if (getEncodingChecks(ast) === undefined && ast.checks === undefined) return base
   return (input, options) => {
     const output = base(input, options)
-    if (
-      isFailure(output) ||
-      input === InternalParser.missing ||
-      output === InternalParser.missing ||
-      options.disableChecks
-    ) {
-      return output
-    }
-    if (encodingChecks !== undefined) {
-      const issues = SchemaAST.collectIssues(encodingChecks, input, undefined, ast, options)
-      if (issues !== undefined) return fail(new SchemaIssue.Composite(ast, issues, input, options))
-    }
-    if (checks !== undefined) {
-      const issues = SchemaAST.collectIssues(checks, output, undefined, ast, options)
-      if (issues !== undefined) return fail(new SchemaIssue.Composite(ast, issues, output, options))
-    }
-    return output
+    if (isFailure(output)) return output
+    const issue = checkOutput(ast, input, output, options)
+    return issue === undefined ? output : fail(issue)
   }
 }
 
@@ -276,11 +236,7 @@ function compileDetailedArrays(ast: SchemaAST.Arrays): DetailedDecoder {
     const end = rest.length === 0 ? elementLength : Math.max(length, elementLength + tailLength)
     const tailThreshold = Math.max(elementLength, length - tailLength)
     for (let index = 0; index < end; index++) {
-      const element = index < elementLength
-        ? elements[index]
-        : index >= tailThreshold
-        ? rest[index - tailThreshold + 1]
-        : rest[0]
+      const element = Diagnostics.getTupleElement(elements, rest, tailThreshold, index)
       const value = index < length ? input[index] : InternalParser.missing
       const decoded = element.decode(value, options)
       if (isFailure(decoded)) {
@@ -291,10 +247,7 @@ function compileDetailedArrays(ast: SchemaAST.Arrays): DetailedDecoder {
       } else if (decoded !== InternalParser.missing) {
         output[index] = decoded
       } else if (!isOptional(element.ast)) {
-        const issue = new SchemaIssue.Pointer(
-          [index],
-          new SchemaIssue.MissingKey(element.ast.context?.annotations)
-        )
+        const issue = Diagnostics.missingKey(index, element.ast)
         if (!errorsAll) return composite(ast, issue, input, options)
         if (issues === undefined) issues = [issue]
         else issues.push(issue)
@@ -302,10 +255,7 @@ function compileDetailedArrays(ast: SchemaAST.Arrays): DetailedDecoder {
     }
     if (rest.length === 0 && length > elementLength) {
       for (let index = elementLength; index < length; index++) {
-        const issue = new SchemaIssue.Pointer(
-          [index],
-          new SchemaIssue.UnexpectedKey(ast, input[index], options)
-        )
+        const issue = Diagnostics.unexpectedKey(ast, index, input[index], options)
         if (!errorsAll) return composite(ast, issue, input, options)
         if (issues === undefined) issues = [issue]
         else issues.push(issue)
@@ -334,9 +284,7 @@ function compileDetailedObjects(ast: SchemaAST.Objects): DetailedDecoder {
     decodeKey: compileDetailed(SchemaAST.parameterFromPropertyKey(signature.parameter)),
     decodeValue: compileDetailed(signature.type)
   }))
-  const expectedKeys = ast.propertySignatures.map((property) =>
-    typeof property.name === "number" ? String(property.name) : property.name
-  )
+  const expectedKeys = Diagnostics.getExpectedKeys(ast)
   const expectedKeysSet = new Set<PropertyKey>(expectedKeys)
   return (input, options) => {
     if (input === InternalParser.missing) return input
@@ -351,18 +299,10 @@ function compileDetailedObjects(ast: SchemaAST.Objects): DetailedDecoder {
       ? indexes.map((index) => SchemaAST.getIndexSignatureKeys(record, index.signature.parameter, options))
       : undefined
     if (options.onExcessProperty === "error") {
-      const coveredKeys = indexKeys ? new Set(expectedKeysSet) : expectedKeysSet
-      if (indexKeys) {
-        for (const keys of indexKeys) {
-          for (const key of keys) coveredKeys.add(key)
-        }
-      }
+      const coveredKeys = Diagnostics.getCoveredKeys(expectedKeysSet, indexKeys)
       for (const key of Reflect.ownKeys(record)) {
         if (coveredKeys.has(key)) continue
-        const issue = new SchemaIssue.Pointer(
-          [key],
-          new SchemaIssue.UnexpectedKey(ast, record[key], options)
-        )
+        const issue = Diagnostics.unexpectedKey(ast, key, record[key], options)
         if (!errorsAll) return composite(ast, issue, input, options)
         if (issues === undefined) issues = [issue]
         else issues.push(issue)
@@ -385,12 +325,9 @@ function compileDetailedObjects(ast: SchemaAST.Objects): DetailedDecoder {
         if (issues === undefined) issues = [issue]
         else issues.push(issue)
       } else if (decoded !== InternalParser.missing) {
-        assignDecodedProperty(output, name, decoded)
+        assignProperty(output, name, decoded)
       } else if (!property.optional) {
-        const issue = new SchemaIssue.Pointer(
-          [name],
-          new SchemaIssue.MissingKey(property.ast.context?.annotations)
-        )
+        const issue = Diagnostics.missingKey(name, property.ast)
         if (!errorsAll) return composite(ast, issue, input, options)
         if (issues === undefined) issues = [issue]
         else issues.push(issue)
@@ -426,7 +363,7 @@ function compileDetailedObjects(ast: SchemaAST.Objects): DetailedDecoder {
         if (decodedKey === InternalParser.missing || decodedValue === InternalParser.missing) continue
         const outputKey = decodedKey as PropertyKey
         if (properties.length > 0 && (expectedKeysSet.has(key) || expectedKeysSet.has(outputKey))) continue
-        assignDecodedProperty(output, outputKey, decodedValue)
+        assignProperty(output, outputKey, decodedValue)
       }
     }
     if (issues !== undefined) return fail(new SchemaIssue.Composite(ast, issues, input, options))
@@ -473,10 +410,6 @@ const makeDetailed = (decode: DetailedDecoder): CompiledDecoder["decode"] => {
       return Effect.die(error)
     }
   }
-}
-
-const resolveDirect = (resolve: ResolveParser, ast: SchemaAST.AST): Parser => {
-  return getDirectParser(resolve(ast))
 }
 
 /** @internal */
@@ -531,7 +464,7 @@ const failMissingComposedObjectProperty = (
   Exit.fail(
     new SchemaIssue.Composite(
       ast,
-      [new SchemaIssue.Pointer([property.name], new SchemaIssue.MissingKey(property.type.context?.annotations))],
+      [Diagnostics.missingKey(property.name, property.type)],
       input,
       options
     )
@@ -556,7 +489,7 @@ const makeComposedObjectContext = (ast: SchemaAST.Objects, resolve: ResolveParse
       type: property.type,
       name: property.name,
       parser(input, options) {
-        const parser = resolveDirect(resolve, property.type)
+        const parser = resolve(property.type)
         out.parser = parser
         return parser(input, options)
       },
@@ -567,49 +500,28 @@ const makeComposedObjectContext = (ast: SchemaAST.Objects, resolve: ResolveParse
   fallback: makeComposedObjectFallback(ast, resolve)
 })
 
-class TypeDecoder implements CompiledDecoder {
-  readonly ast: SchemaAST.AST
-  readonly makeValidate: () => Validate | undefined
-  readonly makeIs: (() => Validate | undefined) | undefined
-
-  constructor(ast: SchemaAST.AST, makeValidate: () => Validate | undefined, makeIs?: () => Validate | undefined) {
-    this.ast = ast
-    this.makeValidate = makeValidate
-    this.makeIs = makeIs
-  }
-  get is(): Is | undefined {
-    const generated = this.makeIs?.()
-    const is: Is | undefined = generated === undefined
-      ? undefined
-      : (input, options) => generated(input, options) !== invalid
-    Object.defineProperty(this, "is", { value: is })
-    return is
-  }
-  get validate(): Validate | undefined {
-    const validate = this.makeValidate()
-    Object.defineProperty(this, "validate", { value: validate })
-    return validate
-  }
-  get decode(): CompiledDecoder["decode"] {
-    const decode = makeDetailed(compileDetailed(this.ast))
-    Object.defineProperty(this, "decode", { value: decode })
-    return decode
-  }
-}
-
 /** @internal */
 const makeTypeDecoder = (
   ast: SchemaAST.AST,
   makeValidate: () => Validate | undefined,
   makeIs?: () => Validate | undefined
-): CompiledDecoder => new TypeDecoder(ast, makeValidate, makeIs)
+): CompiledDecoder => ({
+  get is(): Is | undefined {
+    const generated = makeIs?.()
+    return generated === undefined ? undefined : (input, options) => generated(input, options) !== invalid
+  },
+  get validate() {
+    return makeValidate()
+  },
+  get decode() {
+    return makeDetailed(compileDetailed(ast))
+  }
+})
 
 /** @internal */
 const fromDecode = (makeDecode: () => CompiledDecoder["decode"]): CompiledDecoder => ({
   get decode() {
-    const decode = makeDecode()
-    Object.defineProperty(this, "decode", { value: decode })
-    return decode
+    return makeDecode()
   }
 })
 
@@ -624,7 +536,7 @@ const makeEncodingDecoder = (
 ): CompiledDecoder =>
   fromDecode(() => {
     const links = ast.encoding!
-    const parsers = links.map((link) => resolveDirect(resolve, link.to))
+    const parsers = links.map((link) => resolve(link.to))
     const decode = makeEncoding(ast, links, parsers, makeLocal())
     return (input, options) => {
       try {
@@ -655,7 +567,8 @@ export const runtime = {
   hasExcessProperties,
   failsChecks,
   matchesTemplateLiteral,
-  assignDecodedProperty,
+  assignDecodedProperty: assignProperty,
+  getExpectedKeys: Diagnostics.getExpectedKeys,
   resumeComposedObject,
   failComposedObjectProperty,
   failMissingComposedObjectProperty,

@@ -1,6 +1,6 @@
 import * as Effect from "../../Effect.ts"
 import type * as SchemaAST from "../../SchemaAST.ts"
-import type * as SchemaIssue from "../../SchemaIssue.ts"
+import type * as SchemaCompiler from "../../unstable/schema/SchemaCompiler.ts"
 import { compile as compileInterpreted } from "./interpreter.ts"
 import * as InternalParser from "./parser.ts"
 
@@ -8,37 +8,19 @@ import * as InternalParser from "./parser.ts"
 export const invalid = Symbol()
 
 /** @internal */
-export interface Is {
-  (input: unknown, options: SchemaAST.ParseOptions): boolean
-}
+export type Is = SchemaCompiler.Is
 
 /** @internal */
-export interface Validate {
-  (input: unknown, options: SchemaAST.ParseOptions): unknown | typeof invalid
-}
+export type Validate = SchemaCompiler.Validate
 
 /** @internal */
-export interface Decode {
-  (
-    input: unknown,
-    options: SchemaAST.ParseOptions
-  ): Effect.Effect<unknown, SchemaIssue.Issue, any>
-}
+export type Decode = SchemaCompiler.Decode
 
 /** @internal */
-export interface CompiledDecoder {
-  readonly is?: Is | undefined
-  readonly validate?: Validate | undefined
-  readonly decode: Decode
-}
+export type CompiledDecoder = SchemaCompiler.CompiledDecoder
 
 /** @internal */
-export interface Parser {
-  (
-    input: unknown,
-    options: SchemaAST.ParseOptions
-  ): Effect.Effect<unknown, SchemaIssue.Issue, any>
-}
+export type Parser = Decode
 
 /** @internal */
 export interface ResolveParser {
@@ -50,119 +32,78 @@ export interface Compiler {
   (ast: SchemaAST.AST, resolve: ResolveParser): CompiledDecoder | undefined
 }
 
-const CompiledDecoderTypeId = Symbol()
-const DirectParserTypeId = Symbol()
-
-type CompiledParser = Parser & {
-  readonly [CompiledDecoderTypeId]: CompiledDecoder
-  readonly [DirectParserTypeId]: () => Parser
-}
-
 /** @internal */
-export const getCompiledDecoder = (parser: Parser): CompiledDecoder | undefined =>
-  (parser as Partial<CompiledParser>)[CompiledDecoderTypeId]
+export class Entry implements CompiledDecoder {
+  readonly origin: "interpreted" | "installed"
+  private readonly source: CompiledDecoder
+  readonly parser: Parser
 
-/** @internal */
-export const prepareIs = (
-  parser: Parser,
-  options: SchemaAST.ParseOptions
-): ((input: unknown) => boolean) | undefined => {
-  const compiled = getCompiledDecoder(parser)
-  const is = compiled?.is
-  if (is !== undefined) {
-    return (input) => is(input, options)
-  }
-  const validate = compiled?.validate
-  if (validate !== undefined) {
-    return (input) => validate(input, options) !== invalid
-  }
-}
-
-/** @internal */
-export class PreparedSyncDecoder {
-  readonly validate: Validate | undefined
-  readonly compiled: CompiledDecoder
-
-  constructor(compiled: CompiledDecoder) {
-    this.compiled = compiled
-    this.validate = compiled.validate
+  constructor(source: CompiledDecoder, origin: Entry["origin"]) {
+    this.source = source
+    this.origin = origin
+    let parser: Parser | undefined
+    this.parser = (input, options) => (parser ??= makeParser(this))(input, options)
   }
 
-  get decode(): Parser {
-    return this.compiled.decode
-  }
-}
-
-/** @internal */
-export const prepareSync = (parser: Parser): PreparedSyncDecoder | undefined => {
-  const compiled = getCompiledDecoder(parser)
-  if (compiled === undefined) return undefined
-  return new PreparedSyncDecoder(compiled)
-}
-
-/** @internal */
-export const prepareDecode = (compiled: CompiledDecoder): Parser => {
-  const validate = compiled.validate
-  if (validate === undefined) return compiled.decode
-  return (input, options) => {
-    if (input !== InternalParser.missing) {
-      try {
-        const output = validate(input, options)
-        if (output !== invalid) {
-          return InternalParser.succeed(output)
-        }
-      } catch (error) {
-        return Effect.die(error)
-      }
-    }
-    return compiled.decode(input, options)
-  }
-}
-
-const makeCompiledParser = (compiled: CompiledDecoder): CompiledParser => {
-  let direct: Parser | undefined
-  const getDirect = (): Parser => direct ??= prepareDecode(compiled)
-  const parser: Parser = (input, options) => getDirect()(input, options)
-  return Object.assign(parser, {
-    [CompiledDecoderTypeId]: compiled,
-    [DirectParserTypeId]: getDirect
-  })
-}
-
-/** @internal */
-export const getDirectParser = (parser: Parser): Parser =>
-  (parser as Partial<CompiledParser>)[DirectParserTypeId]?.() ?? parser
-
-const cache = new WeakMap<SchemaAST.AST, Parser>()
-
-class NormalizedDecoder implements CompiledDecoder {
-  readonly compiled: CompiledDecoder
-
-  constructor(compiled: CompiledDecoder) {
-    this.compiled = compiled
-  }
-  get is() {
-    const is = this.compiled.is
+  get is(): Is | undefined {
+    const is = this.source.is
     Object.defineProperty(this, "is", { value: is })
     return is
   }
-  get validate() {
-    const validate = this.compiled.validate
+
+  get validate(): Validate | undefined {
+    const validate = this.source.validate
     Object.defineProperty(this, "validate", { value: validate })
     return validate
   }
-  get decode() {
-    const decode = this.compiled.decode
+
+  get decode(): Decode {
+    const decode = this.source.decode
     Object.defineProperty(this, "decode", { value: decode })
     return decode
   }
 }
 
+const makeParser = (entry: Entry): Parser => {
+  const validate = entry.validate
+  if (validate === undefined) return entry.decode
+  return (input, options) => {
+    if (input !== InternalParser.missing) {
+      try {
+        const output = validate(input, options)
+        if (output !== invalid) return InternalParser.succeed(output)
+      } catch (error) {
+        return Effect.die(error)
+      }
+    }
+    return entry.decode(input, options)
+  }
+}
+
 /** @internal */
-export const set = (ast: SchemaAST.AST, compiled: CompiledDecoder): Parser => {
-  const parser = makeCompiledParser(new NormalizedDecoder(compiled))
-  cache.set(ast, parser)
-  return parser
+export const prepareDecode = (decoder: CompiledDecoder): Parser => new Entry(decoder, "installed").parser
+
+/** @internal */
+export const prepareIs = (entry: Entry, options: SchemaAST.ParseOptions): ((input: unknown) => boolean) | undefined => {
+  const is = entry.is
+  if (is !== undefined) return (input) => is(input, options)
+  const validate = entry.validate
+  if (validate !== undefined) return (input) => validate(input, options) !== invalid
+}
+
+const cache = new WeakMap<SchemaAST.AST, Entry>()
+
+/** @internal */
+export const set = (ast: SchemaAST.AST, decoder: CompiledDecoder): Entry => {
+  const entry = new Entry(decoder, "installed")
+  cache.set(ast, entry)
+  return entry
+}
+
+const setInterpreted = (ast: SchemaAST.AST, resolve: ResolveParser): Entry => {
+  const entry = new Entry({ decode: compileInterpreted(ast, resolve) }, "interpreted")
+  cache.set(ast, entry)
+  return entry
 }
 
 let installedCompiler: Compiler | undefined
@@ -173,15 +114,15 @@ export const install = (compiler: Compiler): void => {
 }
 
 /** @internal */
-export const resolve: ResolveParser = (ast) => {
+export const resolve = (ast: SchemaAST.AST): Entry => {
   const cached = cache.get(ast)
   if (cached !== undefined) return cached
-  const compiled = installedCompiler?.(ast, resolve)
-  if (compiled !== undefined) return set(ast, compiled)
-  const parser = compileInterpreted(ast, resolve)
-  cache.set(ast, parser)
-  return parser
+  const compiled = installedCompiler?.(ast, resolveParser)
+  return compiled !== undefined ? set(ast, compiled) : setInterpreted(ast, resolveParser)
 }
+
+/** @internal */
+export const resolveParser: ResolveParser = (ast) => resolve(ast).parser
 
 /** @internal */
 export const makeScopedCompiler = (compiler: Compiler): (ast: SchemaAST.AST) => void => {
@@ -191,29 +132,20 @@ export const makeScopedCompiler = (compiler: Compiler): (ast: SchemaAST.AST) => 
     const recursive = pending.get(ast)
     if (recursive !== undefined) return recursive
     const cached = cache.get(ast)
-    if (cached !== undefined && getCompiledDecoder(cached) !== undefined) {
-      return cached
-    }
-    return compileAndSet(ast, cached)
+    return cached?.origin === "installed" ? cached.parser : compileAndSet(ast, cached).parser
   }
 
-  const compileAndSet = (ast: SchemaAST.AST, cached: Parser | undefined): Parser => {
-    let parser: Parser | undefined
-    const recursive: Parser = (input, options) => parser!(input, options)
-    pending.set(ast, recursive)
+  const compileAndSet = (ast: SchemaAST.AST, cached: Entry | undefined): Entry => {
+    let entry: Entry
+    pending.set(ast, (input, options) => entry.parser(input, options))
     try {
       const compiled = compiler(ast, resolveScoped)
-      if (compiled !== undefined) {
-        parser = set(ast, compiled)
-        return parser
-      }
-      if (cached !== undefined && getCompiledDecoder(cached) !== undefined) {
-        parser = cached
-        return parser
-      }
-      parser = compileInterpreted(ast, resolveScoped)
-      cache.set(ast, parser)
-      return parser
+      entry = compiled !== undefined
+        ? set(ast, compiled)
+        : cached?.origin === "installed"
+        ? cached
+        : setInterpreted(ast, resolveScoped)
+      return entry
     } finally {
       pending.delete(ast)
     }

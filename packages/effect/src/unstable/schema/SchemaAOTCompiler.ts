@@ -8,42 +8,45 @@
 import * as Codegen from "../../internal/schema/codegen.ts"
 import * as SchemaAST from "../../SchemaAST.ts"
 
+const helper = Codegen.runtimeReference
+
 const validator = (ast: SchemaAST.AST, needsValue: boolean): string => {
   const emitted = Codegen.emitValidate(ast, needsValue)
-  return `(function(C,R){${emitted.source}})([${emitted.references.join(",")}],R)`
+  return `(function(C,R){${emitted.source}})([${emitted.bindings.map((binding) => binding.reference).join(",")}],R)`
 }
 
 const typeDecoder = (ast: SchemaAST.AST, emitIs: boolean): string =>
-  `R.makeTypeDecoder(ast,()=>${validator(ast, true)}${emitIs ? `,()=>${validator(ast, false)}` : ""})`
+  `${helper("makeTypeDecoder")}(ast,()=>${validator(ast, true)}${emitIs ? `,()=>${validator(ast, false)}` : ""})`
 
 const composedObject = (ast: SchemaAST.Objects): string =>
-  `(function(context,R){${Codegen.emitComposedObject(ast)}})(R.makeComposedObjectContext(ast,R.resolve),R)`
+  `(function(context,R){${Codegen.emitComposedObject(ast)}})(${helper("makeComposedObjectContext")}(ast,${
+    helper("resolve")
+  }),R)`
 
 const localParser = (ast: SchemaAST.AST): string => {
-  const emission = Codegen.shouldCompileParser(ast, true) ? Codegen.getEmission(ast, 0, true) : 0
-  if (emission !== 0) return `R.prepareDecode(${typeDecoder(ast, emission === 2)})`
-  if (
-    ast._tag === "Objects" && ast.indexSignatures.length === 0 &&
-    ast.propertySignatures.length <= Codegen.maxGeneratedNodes
-  ) {
-    return `R.applyChecks(ast,${composedObject(ast)})`
+  const selection = Codegen.select(ast, true)
+  if (selection._tag === "Type") return `${helper("prepareDecode")}(${typeDecoder(ast, selection.outputFree)})`
+  if (selection._tag === "Object" && selection.ast.propertySignatures.length <= Codegen.maxGeneratedNodes) {
+    return `${helper("applyChecks")}(ast,${composedObject(selection.ast)})`
   }
-  return "R.makeLocalParser(ast,R.resolve)"
+  return `${helper("makeLocalParser")}(ast,${helper("resolve")})`
 }
 
 const decoder = (ast: SchemaAST.AST): string | undefined => {
-  if (!Codegen.shouldCompileParser(ast)) return undefined
-  const emission = Codegen.getEmission(ast)
-  if (emission !== 0) return typeDecoder(ast, emission === 2)
-  if (ast.encoding !== undefined) {
-    return `R.makeEncodingDecoder(ast,R.resolve,()=>${localParser(ast)})`
-  }
-  if (ast._tag === "Objects" && Codegen.canCompileComposedObject(ast)) {
-    return `R.fromDecode(()=>${
-      ast.propertySignatures.length <= Codegen.maxGeneratedNodes
-        ? composedObject(ast)
-        : "R.makeComposedObjectFallback(ast,R.resolve)"
-    })`
+  const selection = Codegen.select(ast)
+  switch (selection._tag) {
+    case "Fallback":
+      return undefined
+    case "Type":
+      return typeDecoder(ast, selection.outputFree)
+    case "Encoding":
+      return `${helper("makeEncodingDecoder")}(ast,${helper("resolve")},()=>${localParser(ast)})`
+    case "Object":
+      return `${helper("fromDecode")}(()=>${
+        selection.ast.propertySignatures.length <= Codegen.maxGeneratedNodes
+          ? composedObject(selection.ast)
+          : `${helper("makeComposedObjectFallback")}(ast,${helper("resolve")})`
+      })`
   }
 }
 
@@ -116,7 +119,7 @@ export const compile = (asts: ReadonlyArray<SchemaAST.AST>): string => {
         node.indexSignatures.forEach((signature, index) => {
           visit(
             SchemaAST.parameterFromPropertyKey(signature.parameter),
-            `R.parameterFromPropertyKey(${name}.indexSignatures[${index}].parameter)`
+            `${helper("parameterFromPropertyKey")}(${name}.indexSignatures[${index}].parameter)`
           )
           visit(signature.type, `${name}.indexSignatures[${index}].type`)
         })
@@ -130,7 +133,7 @@ export const compile = (asts: ReadonlyArray<SchemaAST.AST>): string => {
     const source = decoder(node)
     if (source !== undefined) {
       factories.push(`function d${index}(ast){return ${source}}`)
-      installations.push(`R.set(${name},d${index}(${name}));`)
+      installations.push(`${helper("set")}(${name},d${index}(${name}));`)
     }
   }
   asts.forEach((ast, index) => visit(ast, `asts[${index}]`))

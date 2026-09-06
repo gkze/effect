@@ -167,8 +167,9 @@ export function _is<T>(ast: SchemaAST.AST, options: SchemaAST.ParseOptions = Sch
   let initialized = false
   return <I>(input: I): input is I & T => {
     if (!initialized) {
-      parser = normalCompiler(typeAST)
-      compiledGuard = CompilerRegistry.prepareIs(parser, options)
+      const entry = CompilerRegistry.resolve(typeAST)
+      parser = entry.parser
+      compiledGuard = CompilerRegistry.prepareIs(entry, options)
       initialized = true
     }
     if (compiledGuard !== undefined) {
@@ -554,40 +555,23 @@ export function decodeUnknownSync<S extends Schema.ConstraintDecoder<unknown>>(
   schema: S,
   options?: SchemaAST.ParseOptions
 ): (input: unknown, options?: SchemaAST.ParseOptions) => S["Type"] {
-  const decode = asSync(decodeUnknownEffect(schema, options))
-  if (options !== undefined) return decode
-  let parser: Parser | undefined
-  let compiled: CompilerRegistry.PreparedSyncDecoder | undefined
-  let validate: CompilerRegistry.Validate | undefined
+  let entry: CompilerRegistry.Entry | undefined
   return (input, overrideOptions) => {
-    if (overrideOptions !== undefined) return decode(input, overrideOptions)
-    if (parser === undefined) {
-      parser = normalCompiler(schema.ast)
-      compiled = CompilerRegistry.prepareSync(parser)
-      validate = compiled?.validate
-      if (compiled !== undefined && validate === undefined) parser = compiled.decode
-    }
-    if (compiled === undefined) return runParserSync<S["Type"]>(parser, input, SchemaAST.defaultParseOptions)
-    if (validate === undefined) {
-      const result = parser(input, SchemaAST.defaultParseOptions)
-      if (effectIsExit(result)) {
-        if (Exit.isFailure(result)) return throwSyncCause(result.cause)
-        const value = (result as InternalParser.Success<unknown, SchemaIssue.Issue>)[InternalParser.args]
-        return value === InternalParser.missing
-          ? throwSyncCause(Cause.fail(new SchemaIssue.InvalidValue()))
-          : value as S["Type"]
+    entry ??= CompilerRegistry.resolve(schema.ast)
+    const parseOptions = options === undefined
+      ? overrideOptions ?? SchemaAST.defaultParseOptions
+      : mergeParseOptions(options, overrideOptions)
+    const validate = entry.validate
+    if (validate !== undefined && input !== InternalParser.missing) {
+      let output: unknown
+      try {
+        output = validate(input, parseOptions)
+      } catch (error) {
+        return throwSyncDefect(error)
       }
-      return runParserSync<S["Type"]>(() => result, input, SchemaAST.defaultParseOptions)
+      if (output !== CompilerRegistry.invalid) return output as S["Type"]
     }
-    let output: unknown
-    try {
-      output = validate(input, SchemaAST.defaultParseOptions)
-    } catch (error) {
-      return throwSyncDefect(error)
-    }
-    return output === CompilerRegistry.invalid
-      ? runParserSync<S["Type"]>(compiled.decode, input, SchemaAST.defaultParseOptions)
-      : output as S["Type"]
+    return runParserSync<S["Type"]>(entry.decode, input, parseOptions)
   }
 }
 
@@ -1100,19 +1084,12 @@ const runParserSync = <T>(
 }
 
 /** @internal */
-export interface Parser {
-  (
-    input: unknown,
-    options: SchemaAST.ParseOptions
-  ): Effect.Effect<unknown, SchemaIssue.Issue, any>
-}
+export type Parser = CompilerRegistry.Parser
 
 /** @internal */
-export interface Compiler {
-  (ast: SchemaAST.AST): Parser
-}
+export type Compiler = CompilerRegistry.ResolveParser
 
-const normalCompiler: Compiler = CompilerRegistry.resolve
+const normalCompiler: Compiler = CompilerRegistry.resolveParser
 
 const constructorCompiler: Compiler = memoize((ast) =>
   Interpreter.compile(ast, constructorCompiler, compileConstructorDefault)

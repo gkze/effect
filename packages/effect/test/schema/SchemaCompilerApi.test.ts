@@ -49,6 +49,47 @@ describe("SchemaCompiler", () => {
     strictEqual(validations, 1)
   })
 
+  it("retains one resolved entry across sync option paths", () => {
+    for (const firstOptions of [undefined, { reportInput: true }]) {
+      const schema = Schema.Struct({ value: Schema.String })
+      const decode = SchemaParser.decodeUnknownSync(schema)
+      const input = { value: "original" }
+      deepStrictEqual(decode(input, firstOptions), input)
+
+      SchemaCompiler.set(schema.ast, {
+        validate: () => ({ value: "replacement" }),
+        decode: () => Effect.succeed({ value: "replacement" })
+      })
+
+      deepStrictEqual(decode(input), input)
+      deepStrictEqual(decode(input, { reportInput: true }), input)
+      deepStrictEqual(SchemaParser.decodeUnknownSync(schema)(input), { value: "replacement" })
+    }
+  })
+
+  it("does not resolve child operations until the child is parsed", () => {
+    const child = Schema.String.annotate({ title: "lazy child" })
+    let reads = 0
+    SchemaCompiler.set(child.ast, {
+      get validate() {
+        reads++
+        return undefined
+      },
+      get decode() {
+        reads++
+        return Effect.succeed
+      }
+    })
+    const schema = Schema.Struct({ first: Schema.Number, child })
+    const decode = SchemaParser.decodeUnknownSync(schema)
+    throws(() => decode({ first: "invalid", child: "unreached" }))
+    strictEqual(reads, 0)
+    deepStrictEqual(decode({ first: 1, child: "reached" }), { first: 1, child: "reached" })
+    strictEqual(reads, 2)
+    deepStrictEqual(decode({ first: 2, child: "cached" }), { first: 2, child: "cached" })
+    strictEqual(reads, 2)
+  })
+
   it("exposes the canonical missing value to installed decoders", () => {
     const schema = Schema.Struct({ value: Schema.optionalKey(Schema.String) })
     assert(schema.ast._tag === "Objects")

@@ -109,7 +109,7 @@ describe("compiler regression contracts", () => {
       for (const [schema, input, expected] of cases) {
         for (const compiled of [false, true]) {
           if (compiled) SchemaJITCompiler.enable(schema.ast)
-          const parser = CompilerRegistry.resolve(schema.ast)
+          const parser = CompilerRegistry.resolve(schema.ast).parser
           const effect = parser(input, SchemaAST.defaultParseOptions)
           strictEqual(Effect.isEffect(effect), true)
           const output = yield* Effect.map(effect, (value) => value)
@@ -380,6 +380,45 @@ describe("compiler regression contracts", () => {
     strictEqual(SchemaParser.is(schema)({ value: "a" }), true)
     strictEqual(SchemaParser.is(schema)({ value: "b" }), true)
     strictEqual(reads, 1)
+  })
+
+  it("shares lazy detailed decoding across public adapters without mutating the supplied decoder", () => {
+    const schema = Schema.Struct({ value: Schema.String })
+    const reads: Array<string> = []
+    const decoder = Object.freeze({
+      get validate() {
+        strictEqual(this, decoder)
+        reads.push("validate")
+        return () => SchemaCompiler.invalid
+      },
+      get decode() {
+        strictEqual(this, decoder)
+        reads.push("decode")
+        return Effect.succeed
+      }
+    })
+    SchemaCompiler.set(schema.ast, decoder)
+    const input = { value: "a" }
+    strictEqual(SchemaParser.decodeUnknownSync(schema)(input), input)
+    deepStrictEqual(SchemaParser.decodeUnknownResult(schema)(input), Result.succeed(input))
+    strictEqual(SchemaParser.decodeUnknownSync(schema, { reportInput: true })(input), input)
+    deepStrictEqual(reads, ["validate", "decode"])
+  })
+
+  it("does not restart validation inside the detailed decoder", () => {
+    const schema = Schema.Struct({ values: Schema.Array(Schema.Struct({ value: Schema.String })) })
+    SchemaJITCompiler.enable(schema.ast)
+    let reads = 0
+    const result = SchemaParser.decodeUnknownResult(schema)({
+      values: [{
+        get value() {
+          reads++
+          return 1
+        }
+      }]
+    })
+    assert(Result.isFailure(result))
+    strictEqual(reads, 2)
   })
 
   it("does not hide generated-source defects when Function is available", () => {
