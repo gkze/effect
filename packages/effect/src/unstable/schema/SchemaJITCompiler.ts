@@ -20,7 +20,10 @@ const compileScoped = CompilerRegistry.makeScopedCompiler(compile)
  * The AST is installed immediately, while its `is`, `validate`, and `decode`
  * operations remain lazy. Existing compiled descendants are preserved and
  * lazy boundaries are compiled when first reached. If dynamic function
- * generation is unavailable, decoding continues through the interpreter.
+ * generation is unavailable or compilation fails, decoding continues through
+ * the interpreter. Failed compilation is not retried for that entry.
+ * Exceptions from executing a parser keep their normal behavior and do not
+ * trigger fallback.
  *
  * @category compilation
  * @since 4.0.0

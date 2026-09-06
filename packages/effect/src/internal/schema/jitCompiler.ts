@@ -8,6 +8,7 @@ import {
   type ResolveParser,
   type Validate
 } from "./compilerRegistry.ts"
+import { compile as compileInterpreted } from "./interpreter.ts"
 
 let functionConstructor: FunctionConstructor | undefined
 let functionConstructorSupported = false
@@ -23,22 +24,40 @@ const supportsDynamicFunction = (): boolean => {
   }
 }
 
-const makeFunction = (...parameters: Array<string>): Function | undefined => {
-  try {
-    return globalThis.Function(...parameters)
-  } catch (error) {
-    // Recheck the capability in case the environment changed after activation.
-    // A syntax/emitter defect must not silently select the interpreter.
-    functionConstructor = undefined
-    if (!supportsDynamicFunction()) return undefined
-    throw error
+const withCompilationFallback = (
+  decoder: CompiledDecoder,
+  makeFallback: () => Parser
+): CompiledDecoder => {
+  let failed = false
+  const getOperation = <K extends keyof CompiledDecoder>(key: K): CompiledDecoder[K] => {
+    if (!failed) {
+      try {
+        return decoder[key]
+      } catch {
+        // Only initialize operations here; never run a parser inside this catch.
+        failed = true
+        decoder = Runtime.fromDecode(makeFallback)
+      }
+    }
+    return decoder[key]
+  }
+  return {
+    get is() {
+      return getOperation("is")
+    },
+    get validate() {
+      return getOperation("validate")
+    },
+    get decode() {
+      return getOperation("decode")
+    }
   }
 }
 
-const makeValidate = (ast: SchemaAST.AST, needsValue: boolean): Validate | undefined => {
+const makeValidate = (ast: SchemaAST.AST, needsValue: boolean): Validate => {
   const emitted = Codegen.emitValidate(ast, needsValue)
-  const factory = makeFunction("C", "R", emitted.source)
-  return factory?.(emitted.bindings.map((binding) => binding.value), Runtime)
+  const factory = globalThis.Function("C", "R", emitted.source)
+  return factory(emitted.bindings.map((binding) => binding.value), Runtime)
 }
 
 const makeTypeDecoder = (ast: SchemaAST.AST, emitIs: boolean): CompiledDecoder =>
@@ -47,13 +66,19 @@ const makeTypeDecoder = (ast: SchemaAST.AST, emitIs: boolean): CompiledDecoder =
 const makeComposedObjectDecode = (ast: SchemaAST.Objects, resolve: ResolveParser): Parser | undefined => {
   if (ast.propertySignatures.length > Codegen.maxGeneratedNodes) return undefined
   const context = Runtime.makeComposedObjectContext(ast, resolve)
-  const factory = makeFunction("context", "R", Codegen.emitComposedObject(ast))
-  return factory?.(context, Runtime)
+  const factory = globalThis.Function("context", "R", Codegen.emitComposedObject(ast))
+  return factory(context, Runtime)
 }
 
 const makeLocalParser = (ast: SchemaAST.AST, resolve: ResolveParser): Parser => {
   const selection = Codegen.select(ast, true)
-  if (selection._tag === "Type") return prepareDecode(makeTypeDecoder(ast, selection.outputFree))
+  if (selection._tag === "Type") {
+    return prepareDecode(withCompilationFallback(
+      makeTypeDecoder(ast, selection.outputFree),
+      // This checkpoint has already run the outer encoding. Do not run it again.
+      () => Runtime.makeLocalParser(ast, resolve)
+    ))
+  }
   return Runtime.applyChecks(
     ast,
     selection._tag === "Object"
@@ -64,16 +89,26 @@ const makeLocalParser = (ast: SchemaAST.AST, resolve: ResolveParser): Parser => 
 
 /** @internal */
 export const compile = (ast: SchemaAST.AST, resolve: ResolveParser): CompiledDecoder | undefined => {
-  const selection = Codegen.select(ast)
-  if (selection._tag === "Fallback" || !supportsDynamicFunction()) return undefined
-  switch (selection._tag) {
-    case "Type":
-      return makeTypeDecoder(ast, selection.outputFree)
-    case "Encoding":
-      return Runtime.makeEncodingDecoder(ast, resolve, () => makeLocalParser(ast, resolve))
-    case "Object":
-      return Runtime.fromDecode(() =>
-        makeComposedObjectDecode(selection.ast, resolve) ?? Runtime.makeComposedObjectFallback(selection.ast, resolve)
-      )
+  try {
+    const selection = Codegen.select(ast)
+    if (selection._tag === "Fallback" || !supportsDynamicFunction()) return undefined
+    let decoder: CompiledDecoder
+    switch (selection._tag) {
+      case "Type":
+        decoder = makeTypeDecoder(ast, selection.outputFree)
+        break
+      case "Encoding":
+        decoder = Runtime.makeEncodingDecoder(ast, resolve, () => makeLocalParser(ast, resolve))
+        break
+      case "Object":
+        decoder = Runtime.fromDecode(() =>
+          makeComposedObjectDecode(selection.ast, resolve) ?? Runtime.makeComposedObjectFallback(selection.ast, resolve)
+        )
+        break
+    }
+    return withCompilationFallback(decoder, () => compileInterpreted(ast, resolve))
+  } catch {
+    // The registry caches the interpreter when compilation fails before installation.
+    return undefined
   }
 }

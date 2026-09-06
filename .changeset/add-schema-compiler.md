@@ -9,7 +9,7 @@ Add experimental JIT and AOT compilation through the existing `SchemaParser` API
 - Use `SchemaCompiler.set(ast, decoder)` to install a trusted decoder.
 - Use `SchemaAOTCompiler.compile(asts)` at build time to generate a module exporting `install(asts)`. Supply runtime ASTs in the same order; regenerate after schema or Effect upgrades.
 
-Install before parsers' first execution to accelerate them. JIT falls back to the interpreter when dynamic code generation is unavailable; AOT runs without it.
+Install before parsers' first execution to accelerate them. JIT falls back to the interpreter when dynamic code generation is unavailable or compilation fails; parsing errors keep their normal behavior. AOT runs without dynamic code generation.
 
 `Schema.is` and `SchemaParser.is` now accept `ParseOptions`. Using `disableChecks: true` makes the caller responsible for unsafe type narrowing.
 

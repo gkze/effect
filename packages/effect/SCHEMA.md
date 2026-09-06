@@ -47,38 +47,46 @@ reporting, schema creation, and codecs.
 The table below compares Effect Schema with the Valibot and Zod cases available
 in the same suite.
 
-Values are microseconds per operation and lower is better. Results vary between
-machines, so they are most useful for understanding relative costs. A dash
-means that the library does not provide that benchmark.
+Values are median microseconds per operation and lower is better. Results vary
+between machines; cross-library comparisons are diagnostic. A dash means that
+the upstream adapter does not provide that benchmark.
 
-| Scenario                              | Effect interpreted |   Valibot |      Zod 4 |
-| ------------------------------------- | -----------------: | --------: | ---------: |
-| Create a schema                       |              79.21 | **30.97** |      93.27 |
-| Create a schema and parser            |          **79.68** |         — |          — |
-| Validate valid data                   |           **3.89** |      5.11 |          — |
-| Validate invalid data                 |         **0.2333** |    0.2335 |          — |
-| Parse valid data and collect errors   |           **4.72** |      5.18 |       7.10 |
-| Parse invalid data and collect errors |           **7.78** |     15.37 |      22.73 |
-| Parse valid data and stop early       |           **3.89** |      5.12 |          — |
-| Parse invalid data and stop early     |         **0.2315** |    0.2470 |          — |
-| Standard Schema, valid data           |               5.11 |      5.22 |   **3.56** |
-| Standard Schema, invalid data         |          **12.17** |     15.40 |      17.54 |
-| Standard Schema, valid, stop early    |           **4.27** |         — |          — |
-| Standard Schema, invalid, stop early  |         **0.7703** |         — |          — |
-| Encode with a typed codec             |             0.0857 |         — | **0.0442** |
-| Decode with a typed codec             |             0.1062 |         — | **0.0485** |
-| Encode unknown input                  |         **0.0862** |         — |          — |
-| Decode unknown input                  |         **0.1057** |         — |          — |
+Measured on 2026-09-06 at `035d2b3a68`, with Node 24.12.0, V8
+13.6.233.17-node.37, Apple M3, macOS arm64, Valibot 1.4.2, and Zod 4.5.4.
+Each case uses five fresh processes, 300 ms measurement, 100 ms warmup, and
+automatically calibrated batches. Effect's compiler is disabled. Zod parsing
+uses `jitless: true`; Standard Schema and codec cases use their native APIs.
+
+```sh
+pnpm runtimeperf schema-benchmarks --rounds 5 --time 300 --warmup-time 100
+```
+
+| Scenario                              | Effect interpreted | Valibot |  Zod 4 |
+| ------------------------------------- | -----------------: | ------: | -----: |
+| Create a schema                       |              76.15 |   29.93 |  95.74 |
+| Create a schema and parser            |              81.80 |       — |      — |
+| Validate valid data                   |               4.91 |    5.20 |      — |
+| Validate invalid data                 |             0.2478 |  0.2345 |      — |
+| Parse valid data and collect errors   |               5.54 |    5.07 |   7.08 |
+| Parse invalid data and collect errors |               8.13 |   15.43 |  22.67 |
+| Parse valid data and stop early       |               4.80 |    5.07 |      — |
+| Parse invalid data and stop early     |             0.2493 |  0.2422 |      — |
+| Standard Schema, valid data           |               6.07 |    5.30 |   3.64 |
+| Standard Schema, invalid data         |              12.64 |   15.51 |  17.52 |
+| Standard Schema, valid, stop early    |               5.42 |       — |      — |
+| Standard Schema, invalid, stop early  |             0.7917 |       — |      — |
+| Encode with a typed codec             |             0.1008 |       — | 0.0432 |
+| Decode with a typed codec             |             0.0975 |       — | 0.0488 |
+| Encode unknown input                  |             0.0998 |       — |      — |
+| Decode unknown input                  |             0.0976 |       — |      — |
 
 ### Runtime compilation
 
-`SchemaJITCompiler` is an experimental, opt-in runtime compiler for Schema decoders, encoders, and type guards. Import its `enable` entrypoint for a side effect during application startup:
+Schema offers experimental, opt-in JIT and AOT compilation. Both work through
+the normal `SchemaParser` APIs for decoding, encoding, and type guards; schemas
+remain composable and do not acquire a separate compiled type.
 
-```ts
-import "effect/unstable/schema/SchemaJITCompiler/enable"
-```
-
-The import installs the compiler globally, but it does not compile schemas immediately. Applications continue to create and run parsers through the normal `SchemaParser` APIs:
+To enable JIT globally, import its side-effect entrypoint during startup:
 
 ```ts
 import "effect/unstable/schema/SchemaJITCompiler/enable"
@@ -94,182 +102,94 @@ const decodeUser = SchemaParser.decodeUnknownSync(User)
 decodeUser({ id: 1, name: "Ada" })
 ```
 
+Compilation is lazy: the import enables it, but parsers initialize their
+operations only when first used. If the environment forbids `new Function` or
+JIT compilation fails, Schema falls back to interpreted parsing without retrying
+the failed compilation. This also applies to lazy checkpoints, without repeating
+earlier transformations or middleware. Exceptions during parsing keep their
+normal behavior; they do not trigger a restart in the interpreter.
+
 #### One cache, interchangeable parsers
 
-`SchemaCompiler` owns a single registry keyed by AST. `SchemaParser`, the
-interpreter, the JIT compiler, and the AOT compiler all use this registry.
-Encoding uses the same mechanism with the encoded-side AST. A compiler does
-not introduce a parallel cache, a compiled schema type, or an alternative
-parsing API.
+`SchemaCompiler` owns one `WeakMap` keyed by AST. On first use, a parser
+reuses the cached entry or creates and caches a compiled or interpreted decoder.
+Children use the same cache, so an interpreted parent can have compiled children.
+The cache stores decoders, never parsing results.
 
-On the first execution of a parser, the registry:
+Choose how to populate it:
 
-1. looks up the AST in its central cache;
-2. asks the installed compiler for an optimized implementation when no parser is cached;
-3. stores exactly one entry for the AST: either interpreted or installed.
+| API                                | Behavior                                                                                                                                             |
+| ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Import `SchemaJITCompiler/enable`  | Enables lazy JIT globally without replacing existing entries.                                                                                        |
+| `SchemaJITCompiler.enable(ast)`    | Installs one root immediately and compiles its decoding dependencies as needed. Operations remain lazy; already installed descendants are preserved. |
+| `SchemaCompiler.set(ast, decoder)` | Installs a trusted decoder, replacing any entry for that AST. AOT uses the same registry.                                                            |
 
-```text
-SchemaParser API
-       |
-       v
-SchemaCompiler: WeakMap<AST, Entry>
-       |
-       `-- entry
-             +-- origin: interpreted or installed
-             +-- parser: Effect-returning adapter
-             +-- is?(input, options) -> boolean
-             +-- validate?(input, options) -> decoded value or INVALID
-             `-- decode(input, options) -> Effect<value, SchemaIssue>
-```
+These modules live under `effect/unstable/schema`. Selective installation takes
+an AST: use `schema.ast` for decoding, `SchemaAST.flip(schema.ast)` for encoding,
+and `SchemaAST.toType(schema.ast)` for type guards. These are separate cache keys.
 
-Every entry has this shape. An interpreted entry supplies only `decode`; JIT,
-AOT, and manually installed decoders may also supply fast paths. Provenance and
-operations belong to the entry, not to hidden properties on parser functions.
+Install before the **first execution** of parsers you want to accelerate.
+Creating a parser earlier is fine. Late installation is safe, but a parser that
+already captured an entry keeps it, even when later calls change parse options.
 
-There are three ways to populate the same registry:
+#### Parsing behavior and constraints
 
-- Import `effect/unstable/schema/SchemaJITCompiler/enable` to enable lazy JIT
-  compilation for every subsequently resolved AST. Existing registry entries
-  are not replaced.
-- Call `SchemaJITCompiler.enable(ast)` to enable JIT compilation for one exact
-  AST and the dependencies reached while building its decoder. The root is
-  installed immediately, but its operations and lazy descendants remain lazy.
-- Call `SchemaCompiler.set(ast, decoder)` to install a trusted decoder directly.
-  This is the integration point for generated AOT decoders. A later call for the
-  same AST replaces the registry entry.
+A compiled entry can provide three independently lazy operations:
 
-The selective APIs accept an AST rather than a Schema. Decoding uses
-`schema.ast`; encoding uses `SchemaAST.flip(schema.ast)`. Parser closures that
-already resolved an older registry entry keep it, so late installation is safe
-but may not accelerate those existing closures. A synchronous decoder retains
-the same entry whether a call omits parse options or supplies overrides.
+| Operation            | Result                                    | Purpose                                                                                 |
+| -------------------- | ----------------------------------------- | --------------------------------------------------------------------------------------- |
+| `is`, optional       | `boolean`                                 | Validates without constructing output, when checks do not require reconstructed values. |
+| `validate`, optional | Decoded value or `SchemaCompiler.invalid` | Validates and constructs output without generating diagnostic issues.                   |
+| `decode`, required   | `Effect<value, SchemaIssue, R>`           | Returns the actual output or detailed failure.                                          |
 
-`SchemaCompiler.set` is a trusted low-level API. Every operation receives the
-active `ParseOptions`; `validate` reports failure with
-`SchemaCompiler.invalid`, and `decode` receives `SchemaCompiler.missing` when an
-optional input is absent. The registry does not verify that an installed
-decoder implements the supplied AST.
+Decoding tries `validate` when available. Success returns its output; failure
+runs one detailed `decode` pass. Detailed traversal does not restart fast
+validation at every child. Without `validate`, decoding calls `decode` directly.
 
-Installation does not evaluate `is`, `validate`, or `decode` accessors. The
-registry resolves each operation once when a consumer first needs it, including
-absent optional operations. Getters retain the installed object as their
-receiver. Public installation and JIT installation share this behavior.
-This normalization happens only in the registry entry: compiler factories
-provide the lazy operations without a second layer of memoization. Resolving a
-child parser does not initialize its operations until parsing reaches it.
+`SchemaParser.is(schema, options)` checks `toType(schema.ast)`. It uses `is`,
+then `validate` if `is` is unavailable, or ordinary decoding if neither exists.
+Options are captured when the guard is created. Checks and `onExcessProperty`
+have the same meaning as in decoding; `disableChecks: true` makes the caller
+responsible for unsafe type narrowing.
 
-This replacement is transparent to every `SchemaParser` API that resolves the
-AST. A supported type-side AST has up to three independently lazy operations:
+The following constraints apply:
 
-- `is` validates without constructing an output and returns a boolean. It is
-  generated only when the compiler can prove that no decoded composite value is
-  needed, for example by a check on a reconstructed struct.
-- `validate` validates, materializes the decoded value, and returns a private
-  `INVALID` sentinel instead of constructing issues.
-- `decode` materializes the same value and constructs the normal `SchemaIssue`
-  on failure.
+- Runtime `ParseOptions` apply throughout parsing, without recompilation.
+  Annotations cannot override them. Children parse sequentially; use Effect
+  concurrency combinators for independent operations or inside transformations.
+- A failed validation can read properties and run checks twice. Checks must
+  have no observable side effects; property getters must be deterministic and
+  safe to repeat. Declaration parsers have the same constraint and must be
+  synchronous.
+- ASTs with encodings enter `decode` directly. Transformations and middleware
+  run once, with their validation checkpoints resolved through the shared cache.
+  Local checkpoints preserve the original AST for checks and issues.
+- Unsupported nodes and code-size limits select composed or interpreted parsing;
+  supported descendants can still compile. Parsing exceptions follow normal
+  Effect defect behavior.
 
-When `validate` is available, successful decoding stops there. When it returns
-`INVALID`, `decode` performs one detailed compiled pass. Without `validate`,
-decoding calls `decode` directly. `validate` supports every runtime parse option
-without calling the detailed decoder or discarding its issues. `INVALID` means
-invalid input, never an unsupported optimization. Custom check callbacks may
-still allocate issues. Each validator is generated once and receives parse
-options explicitly. Public adapters supply the default options when omitted.
-Different options do not require another dynamic compilation, and the default
-ignore path does not scan excess keys.
+For custom `set` implementations, every operation must honor the active
+`ParseOptions`. Return `invalid` only for invalid input, never to decline an
+optimization; `validate` must not call `decode` and discard its issues.
+User checks may themselves allocate issues. An absent optional input reaches
+`decode` as `SchemaCompiler.missing`.
 
-JIT and installed decoders use the same `CompiledDecoder` operation types,
-without a separate `.default` function property. `SchemaParser.Parser`
-implementations and installed `decode` operations return ordinary Effects
-whose successes contain the actual output.
-
-Internal parsers return ordinary Effects too. There is no `Unchanged` result,
-fake success, or mutable reused success. This accepts per-value success
-allocations while the common interpreter, JIT, and AOT architecture is being
-established. The shared AST cache stores parsers, never parse results.
-
-The interpreter and detailed compiler runtime share check evaluation, numeric
-key normalization, excess-key coverage, tuple element selection, and missing /
-unexpected-key issue construction. Their traversal loops remain separate:
-the detailed decoder visits its children directly, without restarting their
-fast validation through the registry. A failed type-side validation therefore
-adds one detailed pass, not another replay at every nested node.
-
-Pass parse options when creating or calling a parser. They apply throughout the
-parse; annotations cannot override them. Composite schemas parse children
-sequentially, including asynchronous transformations and middleware. There is
-no `concurrency` parse option. Use Effect concurrency combinators explicitly
-inside a transformation or around independent parsing operations when needed.
-
-An AST containing an encoding has no root `is` phase. Its compiled `decode`
-orchestrates transformations and middleware directly, executing each operation
-exactly once. The schemas before, between, and after those operations are
-resolved through the same central cache, so every checkpoint independently uses
-its compiled or interpreted parser. The final local checkpoint retains the
-original AST for checks and issues while skipping only that node's outer
-encoding. It is a private stage of the root entry, not a second cache entry:
-
-```text
-cached checkpoint -> compiled decode operation -> cached checkpoint
-```
-
-Interpreted parsers also resolve their children through this cache. Unsupported
-or unprofitable structural roots can therefore remain interpreted while their
-supported descendants compile. This local fallback does not create a second
-parser role or retain a private interpreted copy of a compiled parser.
-
-`SchemaParser.is(schema, options)` always checks `SchemaAST.toType(schema.ast)`.
-It uses the generated `is` operation when available, otherwise it runs
-`validate` and reduces its result to a boolean. The options are captured when
-the type guard is created. Runtime `onExcessProperty` and checks have the same
-meaning as in decoding. `disableChecks: true` is an
-explicitly unsafe optimization: the caller takes responsibility for the type
-narrowing. There is no second parser cache or separately exposed compiled
-schema.
-
-Unsupported or unprofitable AST roots use the interpreter. If the environment
-disallows dynamic code generation, JIT installation leaves the interpreted
-entry in place; manually installed AOT decoders continue to work. On an invalid
-type-side decode, `validate` and `decode` can read input properties and execute
-checks twice. Checks must therefore be free of observable side effects, and
-input property getters reached by a compiled parser must be deterministic and
-safe to repeat. Declaration parsers have the same replay constraint and must
-also complete synchronously. Transformations and middleware are executed only
-by `decode` and remain outside the replay region. Enabling the JIT compiler
-changes the execution strategy, not the results of the `SchemaParser` APIs.
-
-Inlining is bounded by depth and expanded node count, including repeated uses
-of a shared subtree. Larger graphs use composed or interpreted parsers whose
-children still resolve through the shared registry, avoiding oversized generated
-functions.
-
-Unavailability of dynamic `Function` construction selects the interpreter.
-Emitter, generated-source, and factory-initialization bugs are reported rather
-than hidden by that fallback. Exceptions raised during parsing still follow
-the ordinary Effect defect behavior.
+Installation trusts the decoder to implement its AST and does not mutate the
+supplied object. Operation accessors are evaluated once, on demand, with that
+object as their receiver; missing optional operations are cached too. Installed
+`decode` functions return ordinary Effects.
 
 #### Ahead-of-time compilation
 
-`effect/unstable/schema/SchemaAOTCompiler` provides an experimental build-time
-`compile(asts)` function accepting a readonly array of ASTs. It returns a
-JavaScript ES module exporting `install(asts)`. The generated module receives
-the corresponding runtime ASTs in the same order, so
-checks, symbols, transformations, and middleware retain their runtime identity.
-They are not serialized. Neither compilation nor importing the generated module
-installs a decoder; calling `install` writes generated entries into the same
-registry used by JIT and `SchemaCompiler.set`.
-
-Export the root array from the schema module for use during both generation and
-installation. A single schema uses `[Person.ast]`; an empty array produces an
-installer that does nothing. Shared dependencies and repeated roots are emitted
-and installed once by AST identity.
+`SchemaAOTCompiler.compile(asts)` accepts a readonly array of ASTs and returns
+a JavaScript ES module exporting `install(asts)`. Share the root array between
+the build script and the application:
 
 ```ts
 export const roots = [Person.ast, Order.ast] as const
 ```
 
-For example, a build script can generate one module for these roots:
+Generate the module at build time:
 
 ```ts
 import * as SchemaAOTCompiler from "effect/unstable/schema/SchemaAOTCompiler"
@@ -279,7 +199,7 @@ import { roots } from "./schemas.js"
 await writeFile("./schemas.decoders.js", SchemaAOTCompiler.compile(roots))
 ```
 
-The application then installs it before first parser execution:
+Install it before first parser execution:
 
 ```ts
 import * as SchemaParser from "effect/SchemaParser"
@@ -290,33 +210,28 @@ install(roots)
 const decodePerson = SchemaParser.decodeUnknownSync(Person)
 ```
 
-JIT and AOT share the source emitter and runtime support. JIT evaluates emitted
-source with `Function`; AOT writes those functions into the JavaScript module.
-Generated modules import `effect/unstable/schema/SchemaCompiler/runtime`, not
-the emitter or either compiler. They work when dynamic code generation is
-disabled. This support module is version-coupled to the generated output.
+Neither generation nor importing the generated module installs decoders.
+`install` registers the roots and supported statically reachable dependencies.
+Use `[ast]` for one schema; an empty array is a no-op. Repeated roots and shared
+dependencies are emitted and installed once by identity.
 
-Both compilers use the same selection rules for type-side validation, encodings,
-composed objects, and fallback, including local encoding checkpoints. The emitter
-keeps each captured value paired with its runtime AST reference: JIT supplies the
-value, while AOT emits the reference. Runtime helper names are checked against
-the shared support module's TypeScript type. Generated JavaScript still needs
-execution tests; these checks do not type-check the emitted program itself.
+JIT and AOT share generation rules and runtime support. Generated modules import
+`effect/unstable/schema/SchemaCompiler/runtime`, not the code generator, and
+work without dynamic function construction. Validators and composed Struct
+decoders are static; detailed diagnostics and transformation orchestration still
+initialize lazily. AOT does not precompute every operation.
 
-The initial implementation statically emits validators and composed Struct
-decoders. Detailed diagnostic closures and transformation orchestration still
-initialize lazily in shared runtime code. This is not full ahead-of-time
-preparation of every operation. It preserves the same issues, runtime options,
-and single execution of transformations and middleware as JIT.
+Keep these installation requirements in mind:
 
-Regenerate after changing the schema definition or Effect version. Installation
-trusts the array length and root order, and the ASTs' structure and sharing; it
-does not check compatibility with the build-time roots. It installs generated
-statically reachable dependencies as well as the roots when supported. Suspend thunks are not forced,
-and unsupported nodes retain interpreted parsing. No late JIT is needed for
-these fallbacks. Type-side and flipped ASTs have separate registry identities:
-generate and install those ASTs separately when needed. Existing parser closures
-keep previously captured entries after late installation, as with `set`.
+- Regenerate after schema or Effect version changes. Installation trusts the
+  array length, root order, AST structure, and sharing to match the build-time
+  roots; it does not check compatibility.
+- Checks, symbols, transformations, and middleware come from the runtime ASTs,
+  not serialization, preserving their identity.
+- Suspend thunks are not forced during generation. Their contents and other
+  unsupported nodes use the interpreter, with no late JIT required.
+- Include type-side and flipped ASTs separately when needed. As with `set`,
+  late installation does not update parser closures that captured older entries.
 
 #### Performance snapshot
 

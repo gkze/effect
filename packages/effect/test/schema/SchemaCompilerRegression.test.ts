@@ -12,7 +12,7 @@ import {
 } from "effect"
 import * as CompilerRegistry from "effect/internal/schema/compilerRegistry"
 import { SchemaCompiler, SchemaJITCompiler } from "effect/unstable/schema"
-import { deepStrictEqual, strictEqual, throws } from "../utils/assert.ts"
+import { deepStrictEqual, strictEqual } from "../utils/assert.ts"
 
 describe("compiler regression contracts", () => {
   it.effect("preserves missing and present undefined through eager and suspended transformations", () =>
@@ -421,19 +421,23 @@ describe("compiler regression contracts", () => {
     strictEqual(reads, 2)
   })
 
-  it("does not hide generated-source defects when Function is available", () => {
+  it("uses the interpreter after selective JIT generation fails", () => {
     const schema = Schema.Struct({ value: Schema.String })
     const original = globalThis.Function
     const defect = new SyntaxError("generated source defect")
+    let attempts = 0
     try {
       globalThis.Function = ((...parameters: Array<string>) => {
         if (parameters.length === 1 && parameters[0] === "return true") return original(...parameters)
+        attempts++
         throw defect
       }) as FunctionConstructor
       SchemaJITCompiler.enable(schema.ast)
-      throws(() => SchemaParser.decodeUnknownSync(schema)({ value: "a" }), (error) => {
-        strictEqual(error, defect)
-      })
+      const decode = SchemaParser.decodeUnknownSync(schema)
+      deepStrictEqual(decode({ value: "a", extra: true }), { value: "a" })
+      assert(Result.isFailure(SchemaParser.decodeUnknownResult(schema)({ value: 1 })))
+      deepStrictEqual(decode({ value: "b" }), { value: "b" })
+      strictEqual(attempts, 1)
     } finally {
       globalThis.Function = original
     }
