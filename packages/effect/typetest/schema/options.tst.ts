@@ -10,9 +10,10 @@ describe("runtime and AST options", () => {
     expect<Extract<keyof SchemaAST.Objects, "options">>().type.toBe<never>()
     expect(SchemaParser.decodeUnknownSync(schema, { onExcessProperty: "error" })({ a: "a" }))
       .type.toBe<{ readonly a: string }>()
-    expect(SchemaParser.is(schema, { onExcessProperty: "error" })).type.toBe<
+    expect(SchemaParser.is(schema)).type.toBe<
       <I>(input: I) => input is I & { readonly a: string }
     >()
+    expect(SchemaParser.is).type.not.toBeCallableWith(schema, { onExcessProperty: "error" })
     expect(Schema.Record(Schema.String, Schema.Number).Type)
       .type.toBe<{ readonly [x: string]: number }>()
   })

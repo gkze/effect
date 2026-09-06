@@ -197,9 +197,8 @@ describe("compiler regression contracts", () => {
     strictEqual(SchemaParser.is(schema)(input), true)
     strictEqual(SchemaParser.decodeUnknownSync(schema)(input), input)
     const options = { reportInput: true }
-    strictEqual(SchemaParser.is(schema, options)(input), true)
     strictEqual(SchemaParser.decodeUnknownSync(schema, options)(input), input)
-    deepStrictEqual(seen, [SchemaAST.defaultParseOptions, SchemaAST.defaultParseOptions, options, options])
+    deepStrictEqual(seen, [SchemaAST.defaultParseOptions, SchemaAST.defaultParseOptions, options])
   })
 
   it("bounds inlining of shared subgraphs", () => {
@@ -253,8 +252,8 @@ describe("compiler regression contracts", () => {
     ], { mode: "oneOf" })
     for (const compiled of [false, true]) {
       if (compiled) SchemaJITCompiler.enable(schema.ast)
+      strictEqual(SchemaParser.is(schema)("hello"), false)
       for (const options of [undefined, { errors: "all" }] as const) {
-        strictEqual(SchemaParser.is(schema, options)("hello"), false)
         const result = SchemaParser.decodeUnknownResult(schema, options)("hello")
         assert(Result.isFailure(result))
         strictEqual(result.failure._tag, "OneOf")
@@ -288,8 +287,8 @@ describe("compiler regression contracts", () => {
                 assert(Result.isFailure(SchemaParser.decodeUnknownResult(schema)(input)))
                 continue
               }
+              strictEqual(SchemaParser.is(schema)(input), true)
               for (const option of options) {
-                strictEqual(SchemaParser.is(schema, option)(input), true)
                 strictEqual(Object.is(SchemaParser.decodeUnknownSync(schema, option)(input), input), true)
                 strictEqual(Object.is(SchemaParser.encodeUnknownSync(schema, option)(input), input), true)
                 const result = SchemaParser.decodeUnknownResult(schema, option)(input)

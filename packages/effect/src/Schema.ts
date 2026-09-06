@@ -1361,17 +1361,15 @@ export function toStandardJSONSchemaV1<S extends Constraint>(
  *
  * This function returns a predicate that performs a type-safe check, narrowing
  * the type of the input value if the check passes. The predicate returns `false`
- * for schema mismatches.
+ * for schema mismatches. It checks the decoded type side with the default parse
+ * options: excess properties are ignored and refinement checks are enabled.
+ * For configurable validation, use a decoding API with `Schema.toType(schema)`.
  *
  * **Gotchas**
  *
  * Only causes made entirely of schema issues are converted to `false`. Causes
  * that contain defects, interruptions, or other non-schema reasons throw
  * instead.
- *
- * Parse options are captured when the guard is created. Passing
- * `disableChecks: true` skips refinement checks and is unsafe: the caller
- * assumes responsibility for the resulting type narrowing.
  *
  * **Example** (Defining a basic type guard)
  *
@@ -1394,7 +1392,9 @@ export function toStandardJSONSchemaV1<S extends Constraint>(
  * @category guards
  * @since 3.10.0
  */
-export const is: typeof SchemaParser.is = SchemaParser.is
+export const is: <S extends Constraint>(
+  schema: S
+) => <I>(input: I) => input is I & S["Type"] = SchemaParser.is
 /**
  * Creates an assertion function that throws an error if the input does not match
  * the schema.

@@ -18,8 +18,13 @@ for (const compiled of [false, true]) {
       const symbol = Symbol()
       const value = { fixed: true, "s-a": "a", [symbol]: 1 }
       deepStrictEqual(SchemaParser.decodeUnknownSync(schema)(value, { onExcessProperty: "error" }), value)
-      strictEqual(SchemaParser.is(schema, { onExcessProperty: "error" })(value), true)
-      strictEqual(SchemaParser.is(schema, { onExcessProperty: "error" })({ ...value, extra: 1 }), false)
+      strictEqual(SchemaParser.is(schema)(value), true)
+      strictEqual(SchemaParser.is(schema)({ ...value, extra: 1 }), true)
+      assert(Result.isFailure(
+        SchemaParser.decodeUnknownResult(schema)({ ...value, extra: 1 }, {
+          onExcessProperty: "error"
+        })
+      ))
       const result = SchemaParser.decodeUnknownResult(schema)({ fixed: true, "s-a": 1 }, {
         onExcessProperty: "error",
         errors: "all",
@@ -37,9 +42,11 @@ for (const compiled of [false, true]) {
         Schema.Record(Schema.String, Schema.Number),
         Schema.Record(Schema.TemplateLiteral(["n-", Schema.String]), Schema.Number.check(Schema.isGreaterThan(0)))
       ]))
-      strictEqual(SchemaParser.is(schema, { onExcessProperty: "error" })({ "n-a": -1 }), false)
-      strictEqual(SchemaParser.is(schema, { onExcessProperty: "error", disableChecks: true })({ "n-a": -1 }), true)
-      strictEqual(SchemaParser.is(schema, { onExcessProperty: "error" })({ other: 1 }), true)
+      strictEqual(SchemaParser.is(schema)({ "n-a": -1 }), false)
+      const decode = SchemaParser.decodeUnknownResult(schema, { onExcessProperty: "error" })
+      assert(Result.isFailure(decode({ "n-a": -1 })))
+      assert(Result.isSuccess(decode({ "n-a": -1 }, { disableChecks: true })))
+      assert(Result.isSuccess(decode({ other: 1 })))
     })
 
     it("recognizes numeric fixed keys with and without index signatures", () => {
@@ -50,7 +57,7 @@ for (const compiled of [false, true]) {
         const input = { 1: "one" }
         deepStrictEqual(SchemaParser.decodeUnknownSync(schema)(input, options), input)
         deepStrictEqual(SchemaParser.encodeUnknownSync(schema)(input, options), input)
-        strictEqual(SchemaParser.is(schema, options)(input), true)
+        strictEqual(SchemaParser.is(schema)(input), true)
 
         const result = SchemaParser.decodeUnknownResult(schema)({ 1: 1 }, options)
         assert(Result.isFailure(result))
@@ -60,7 +67,7 @@ for (const compiled of [false, true]) {
         assert(issue._tag === "Pointer")
         deepStrictEqual(issue.path, [1])
         strictEqual(issue.issue._tag, "InvalidType")
-        strictEqual(SchemaParser.is(schema, options)({ ...input, extra: "extra" }), false)
+        assert(Result.isFailure(SchemaParser.decodeUnknownResult(schema)({ ...input, extra: "extra" }, options)))
       }
       const schema = prepare(Schema.Record(Schema.Union([Schema.Literal(1), Schema.Symbol]), Schema.String))
       const input = { 1: "one", [symbol]: "symbol" }
@@ -83,7 +90,7 @@ for (const compiled of [false, true]) {
       const output = SchemaParser.decodeUnknownSync(schema)(input)
       deepStrictEqual(output, { a: "a", child: { a: "a", b: "b" } })
       strictEqual(SchemaParser.is(schema)(input), true)
-      strictEqual(SchemaParser.is(schema, { onExcessProperty: "error" })(input), false)
+      assert(Result.isFailure(SchemaParser.decodeUnknownResult(schema)(input, { onExcessProperty: "error" })))
       deepStrictEqual(SchemaParser.encodeUnknownSync(schema)(output), output)
     })
 

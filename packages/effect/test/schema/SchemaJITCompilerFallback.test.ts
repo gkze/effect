@@ -30,7 +30,6 @@ describe("Schema JIT compilation fallback", () => {
           deepStrictEqual(decode(input), { value: "valid" })
           strictEqual(is(input), true)
           strictEqual(is({ value: 1 }), false)
-          strictEqual(SchemaParser.is(schema, { onExcessProperty: "error" })(input), false)
           throws(() => decode({ value: 1 }), (error) => {
             assertSchemaIssueError(error, `Expected string\n  at ["value"]`)
           })

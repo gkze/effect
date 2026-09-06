@@ -35,7 +35,10 @@ describe("SchemaCompiler", () => {
     const schema = Schema.Struct({ value: Schema.String })
     let validations = 0
     SchemaCompiler.set(schema.ast, {
-      is: (input) => (input as { readonly value?: unknown }).value === "accepted",
+      is: (input, options) => {
+        strictEqual(options, SchemaAST.defaultParseOptions)
+        return (input as { readonly value?: unknown }).value === "accepted"
+      },
       validate: (input) => {
         validations++
         return input
@@ -138,7 +141,7 @@ describe("SchemaJITCompiler", () => {
       assert(initialized > 1)
       for (const options of [{}, { reportInput: true }, { errors: "all" }, { disableChecks: true }] as const) {
         deepStrictEqual(decode(input, options), input)
-        strictEqual(SchemaParser.is(schema, options)(input), true)
+        strictEqual(SchemaParser.is(schema)(input), true)
         strictEqual(constructions, initialized)
       }
     } finally {

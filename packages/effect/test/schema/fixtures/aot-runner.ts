@@ -19,9 +19,9 @@ const options: ReadonlyArray<SchemaAST.ParseOptions | undefined> = [
 const snapshot = () =>
   Object.fromEntries(
     Object.entries(synchronous).map(([name, { inputs, schema }]) => {
+      const is = SchemaParser.is(schema)
       const results = options.map((option) => {
         const decode = SchemaParser.decodeUnknownResult(schema, option)
-        const is = SchemaParser.is(schema, option)
         return inputs.map((input) => {
           events.length = 0
           const result = decode(input)

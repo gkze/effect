@@ -4,6 +4,11 @@
  * `SchemaParser` APIs, allowing runtime and ahead-of-time compilers to use the
  * same cache without introducing a compiled Schema type or a second parser API.
  *
+ * The cache associates each exact AST with an entry containing decoder
+ * operations, never parsing results. The interpreter uses the same registry
+ * with only `decode`; JIT, AOT, and manual installations may add the optional
+ * fast paths in {@link CompiledDecoder}.
+ *
  * @since 4.0.0
  */
 import type * as Effect from "../../Effect.ts"
@@ -31,6 +36,15 @@ export const missing = InternalParser.missing
 /**
  * A compiled boolean validator.
  *
+ * **Details**
+ *
+ * This optional fast path avoids constructing output. Omit it when validation
+ * requires reconstructed values, such as a Struct check that must see the
+ * object after excess properties are removed. Type guards then use `validate`,
+ * or `decode` if neither fast path is available.
+ * It must honor the supplied parse options; public `Schema.is` and
+ * `SchemaParser.is` use the defaults.
+ *
  * @category models
  * @since 4.0.0
  */
@@ -44,10 +58,17 @@ export interface Is {
  *
  * **Details**
  *
+ * This optional synchronous fast path lets valid inputs return their output
+ * without the detailed decoding pass. For decoding, the registry follows
+ * {@link invalid} with `decode` because the sentinel provides no error details.
+ * Type guards instead convert it to `false`. Omit this operation
+ * when the fast path is unsupported or replay would be unsafe, including ASTs
+ * containing transformations or middleware.
+ *
  * It must honor every supported `ParseOptions` value. Return {@link invalid}
  * only for invalid input, never for an unsupported optimization. Do not call
- * the detailed decoder and discard its failure: the caller runs `decode` after
- * `invalid`. User checks may themselves construct issues.
+ * the detailed decoder and discard its failure: decoding would run `decode`
+ * again after `invalid`. User checks may themselves construct issues.
  *
  * @category models
  * @since 4.0.0
@@ -58,6 +79,14 @@ export interface Validate {
 
 /**
  * A compiled decoder that returns detailed Schema issues on failure.
+ *
+ * **Details**
+ *
+ * This required operation implements complete decoding for its AST, including
+ * transformations, middleware, and asynchronous work when present. It makes
+ * every parser API usable without optional fast paths and provides diagnostics
+ * after `validate` returns `invalid`. The implementation can also be interpreted;
+ * invoking `decode` does not imply a switch from compiled to interpreted parsing.
  *
  * @category models
  * @since 4.0.0
@@ -71,8 +100,18 @@ export interface Decode {
  *
  * **Details**
  *
- * `decode` is required because it preserves detailed failures. `validate` and
- * `is` are optional fast paths used by decoding and type guards respectively.
+ * `decode` is required for complete decoding and detailed failures. `validate`
+ * and `is` are optional optimizations, not requirements for an AST to be usable.
+ * The interpreter supplies only `decode` in this same format.
+ *
+ * The registry wraps these operations in an internal entry and owns dispatch.
+ * Decoding tries `validate` when present, returning its output on success or
+ * calling `decode` after `invalid`. Without `validate`, or for the {@link missing}
+ * sentinel, it calls `decode` directly. Type guards prefer `is`, then `validate`,
+ * then ordinary decoding.
+ * They need no diagnostic replay when a fast path returns `false` or `invalid`.
+ * Each operation is resolved lazily on first use, so unused fast paths need
+ * not be compiled.
  *
  * @category models
  * @since 4.0.0

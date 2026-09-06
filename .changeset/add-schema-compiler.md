@@ -11,8 +11,6 @@ Add experimental JIT and AOT compilation through the existing `SchemaParser` API
 
 Install before parsers' first execution to accelerate them. JIT falls back to the interpreter when dynamic code generation is unavailable or compilation fails; parsing errors keep their normal behavior. AOT runs without dynamic code generation.
 
-`Schema.is` and `SchemaParser.is` now accept `ParseOptions`. Using `disableChecks: true` makes the caller responsible for unsafe type narrowing.
-
 ### Breaking changes
 
 - `Literal(0)` and `Literal(-0)` preserve the input's zero sign. Normalize explicitly if you relied on canonicalization.

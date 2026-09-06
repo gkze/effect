@@ -74,19 +74,21 @@ describe("SchemaJITCompiler", () => {
     strictEqual(reads, 1)
   })
 
-  it("honors ParseOptions in compiled type guards", () => {
+  it("uses default options in compiled type guards", () => {
     const structural = Schema.Struct({ value: Schema.String })
-    const rejectExcess = SchemaParser.is(structural, { onExcessProperty: "error" })
-    strictEqual(rejectExcess({ value: "a" }), true)
-    strictEqual(rejectExcess({ value: "a", extra: true }), false)
+    const is = SchemaParser.is(structural)
+    strictEqual(is({ value: "a" }), true)
+    strictEqual(is({ value: "a", extra: true }), true)
+    strictEqual(is({ value: 1 }), false)
 
     const checked = Schema.Struct({ a: Schema.String, b: Schema.String }).check(
       Schema.makeFilter((value, _ast, options) => options.reportInput === true && !Object.hasOwn(value, "extra"))
     )
     const input = { b: "b", a: "a", extra: true }
-    strictEqual(SchemaParser.is(checked, { reportInput: true })(input), true)
     strictEqual(SchemaParser.is(checked)(input), false)
-    strictEqual(SchemaParser.is(checked, { disableChecks: true })(input), true)
+    deepStrictEqual(SchemaParser.decodeUnknownSync(checked)(input, { reportInput: true }), { a: "a", b: "b" })
+    deepStrictEqual(SchemaParser.decodeUnknownSync(checked)(input, { disableChecks: true }), { a: "a", b: "b" })
+    strictEqual(SchemaParser.is(checked)(input), false)
   })
 
   it("keeps runtime options for nested checks, template parts and record keys", () => {
@@ -97,14 +99,16 @@ describe("SchemaJITCompiler", () => {
     })
     const value = { nested: { value: "valid" } }
     strictEqual(SchemaParser.is(checked)(value), false)
-    strictEqual(SchemaParser.is(checked, { reportInput: true })(value), true)
     deepStrictEqual(SchemaParser.decodeUnknownSync(checked)(value, { reportInput: true }), value)
 
     const template = Schema.Struct({
       value: Schema.TemplateLiteral(["prefix-", Schema.String.check(Schema.isMinLength(2))])
     })
     strictEqual(SchemaParser.is(template)({ value: "prefix-a" }), false)
-    strictEqual(SchemaParser.is(template, { disableChecks: true })({ value: "prefix-a" }), true)
+    deepStrictEqual(SchemaParser.decodeUnknownSync(template)({ value: "prefix-a" }, { disableChecks: true }), {
+      value: "prefix-a"
+    })
+    strictEqual(SchemaParser.is(template)({ value: "prefix-a" }), false)
 
     const record = Schema.Record(Schema.String.check(Schema.isStartsWith("x")), Schema.Number)
     const decode = SchemaParser.decodeUnknownSync(record)

@@ -5,12 +5,9 @@ import { describe, expect, it } from "tstyche"
 describe("decoding / encoding API", () => {
   it("is", () => {
     const is = Schema.is(Schema.String)
-    const isWithOptions = Schema.is(Schema.String, { onExcessProperty: "error" })
+    expect(Schema.is).type.not.toBeCallableWith(Schema.String, { onExcessProperty: "error" })
     const u = hole<unknown>()
     if (is(u)) {
-      expect(u).type.toBe<string>()
-    }
-    if (isWithOptions(u)) {
       expect(u).type.toBe<string>()
     }
     const sn = hole<string | number>()

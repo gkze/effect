@@ -1,5 +1,5 @@
 import { describe, it } from "@effect/vitest"
-import { Cause, Effect, Exit, Option, Result, Schema, SchemaGetter, SchemaIssue, SchemaParser } from "effect"
+import { Cause, Effect, Exit, Option, Result, Schema, SchemaAST, SchemaGetter, SchemaIssue, SchemaParser } from "effect"
 import { assertSchemaIssueError, assertTrue, deepStrictEqual, strictEqual, throws } from "../utils/assert.ts"
 
 describe("SchemaParser", () => {
@@ -318,28 +318,30 @@ describe("SchemaParser", () => {
       strictEqual(is(null), false)
     })
 
-    it("should accept ParseOptions", () => {
+    it("should ignore excess properties", () => {
       const schema = Schema.Struct({ value: Schema.String })
-      const is = SchemaParser.is(schema, { onExcessProperty: "error" })
+      const is = SchemaParser.is(schema)
 
       strictEqual(is({ value: "a" }), true)
-      strictEqual(is({ value: "a", extra: true }), false)
+      strictEqual(is({ value: "a", extra: true }), true)
     })
 
-    it("should pass ParseOptions to checks", () => {
+    it("should pass default ParseOptions to checks", () => {
       const schema = Schema.String.check(
-        Schema.makeFilter((_input, _ast, options) => options.reportInput === true)
+        Schema.makeFilter((_input, _ast, options) => {
+          strictEqual(options, SchemaAST.defaultParseOptions)
+          return true
+        })
       )
 
-      strictEqual(SchemaParser.is(schema)("a"), false)
-      strictEqual(SchemaParser.is(schema, { reportInput: true })("a"), true)
+      strictEqual(SchemaParser.is(schema)("a"), true)
     })
 
-    it("should honor disableChecks", () => {
+    it("should always run checks", () => {
       const schema = Schema.String.check(Schema.isMinLength(2))
 
       strictEqual(SchemaParser.is(schema)("a"), false)
-      strictEqual(SchemaParser.is(schema, { disableChecks: true })("a"), true)
+      strictEqual(SchemaParser.is(schema)("ab"), true)
     })
 
     it("should pass decoded output to object checks", () => {
@@ -349,7 +351,6 @@ describe("SchemaParser", () => {
       const input = { b: "b", a: "a", extra: true }
 
       strictEqual(SchemaParser.is(schema)(input), true)
-      strictEqual(SchemaParser.is(schema, { onExcessProperty: "error" })(input), false)
     })
 
     it("should throw an error when the cause is not an Issue", () => {

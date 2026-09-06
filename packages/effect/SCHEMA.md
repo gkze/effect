@@ -111,10 +111,21 @@ normal behavior; they do not trigger a restart in the interpreter.
 
 #### One cache, interchangeable parsers
 
-`SchemaCompiler` owns one `WeakMap` keyed by AST. On first use, a parser
-reuses the cached entry or creates and caches a compiled or interpreted decoder.
-Children use the same cache, so an interpreted parent can have compiled children.
-The cache stores decoders, never parsing results.
+`SchemaCompiler` uses one `WeakMap<AST, Entry>` for interpreted, JIT, AOT, and
+manually installed decoders. Each entry wraps a `CompiledDecoder` object, not
+just a decoding function. The interpreter supplies only `decode`; compiled
+decoders can also supply `validate` and `is`, as described below. The cache
+never stores parsing results.
+
+The registry adds a `parser` function to coordinate `validate` and `decode`,
+and an `origin` flag, either `"interpreted"` or `"installed"`. This flag controls
+replacement during installation, not validation: selective JIT preserves already
+installed descendants but can replace interpreted ones. Callers of `set` supply
+only the decoder operations, not these internal fields.
+
+On first use, a parser reuses the cached entry or creates and caches a compiled
+or interpreted decoder. Children use the same cache, so an interpreted parent
+can have compiled children.
 
 Choose how to populate it:
 
@@ -126,7 +137,9 @@ Choose how to populate it:
 
 These modules live under `effect/unstable/schema`. Selective installation takes
 an AST: use `schema.ast` for decoding, `SchemaAST.flip(schema.ast)` for encoding,
-and `SchemaAST.toType(schema.ast)` for type guards. These are separate cache keys.
+and `SchemaAST.toType(schema.ast)` for type guards. The exact returned AST is
+the cache key. Different AST objects have separate entries, even if structurally
+equal; operations using the same AST object share an entry.
 
 Install before the **first execution** of parsers you want to accelerate.
 Creating a parser earlier is fine. Late installation is safe, but a parser that
@@ -134,7 +147,9 @@ already captured an entry keeps it, even when later calls change parse options.
 
 #### Parsing behavior and constraints
 
-A compiled entry can provide three independently lazy operations:
+Every entry provides the complete `decode` operation. Two optional fast paths
+avoid work that is unnecessary for successful decoding or boolean validation.
+All three operations initialize independently when first needed:
 
 | Operation            | Result                                    | Purpose                                                                                 |
 | -------------------- | ----------------------------------------- | --------------------------------------------------------------------------------------- |
@@ -142,15 +157,36 @@ A compiled entry can provide three independently lazy operations:
 | `validate`, optional | Decoded value or `SchemaCompiler.invalid` | Validates and constructs output without generating diagnostic issues.                   |
 | `decode`, required   | `Effect<value, SchemaIssue, R>`           | Returns the actual output or detailed failure.                                          |
 
-Decoding tries `validate` when available. Success returns its output; failure
-runs one detailed `decode` pass. Detailed traversal does not restart fast
-validation at every child. Without `validate`, decoding calls `decode` directly.
+`decode` is required so every entry can produce output and explain failures,
+even without any fast paths. It also handles transformations, middleware, and
+asynchronous work when the AST requires them. It can be compiled or interpreted;
+calling `decode` does not necessarily mean returning to the interpreter.
 
-`SchemaParser.is(schema, options)` checks `toType(schema.ast)`. It uses `is`,
-then `validate` if `is` is unavailable, or ordinary decoding if neither exists.
-Options are captured when the guard is created. Checks and `onExcessProperty`
-have the same meaning as in decoding; `disableChecks: true` makes the caller
-responsible for unsafe type narrowing.
+`validate` is optional because a synchronous, diagnostic-free first pass is not
+always supported or safe to repeat. In particular, ASTs containing encodings
+omit it so a later failure cannot repeat transformations or middleware.
+
+`is` is optional because preserving validation semantics can require constructing
+output. For example, a check on a Struct must see the reconstructed object with
+extra properties removed. Such a schema uses `validate`, or `decode` if
+`validate` is unavailable, instead of an output-free `is`. Omitting either fast
+path removes an optimization, not parsing capability.
+
+For decoding, `entry.parser` tries `validate` when available. Success already
+contains the output, so no detailed pass is needed. `invalid` contains no error
+location or explanation, so failure requires one detailed `decode` pass. This
+favors valid inputs at the cost of traversing invalid inputs again, only where
+repetition is safe. Without `validate`, or for the `missing` sentinel, it calls
+`decode` directly. The registry owns this dispatch so interpreter, JIT, and AOT
+implementations need not duplicate it. Detailed traversal does not restart fast
+validation at every child.
+
+`SchemaParser.is(schema)` and `Schema.is(schema)` check `toType(schema.ast)`
+with default parse options: excess properties are ignored and checks are enabled.
+The guard uses `is`, then `validate` if `is` is unavailable, converting `invalid`
+to `false` without a diagnostic pass. If neither exists, it uses ordinary
+decoding and converts the outcome to a boolean; non-schema failures still throw.
+For configurable type-side validation, use a decoding API with `Schema.toType(schema)`.
 
 The following constraints apply:
 

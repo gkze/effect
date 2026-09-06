@@ -137,30 +137,28 @@ export function make<S extends Schema.Constraint>(schema: S) {
  *
  * The guard returns `true` on successful validation and `false` when validation
  * fails only with schema issues, without exposing issue details. It always
- * checks the schema's decoded type side. Parse options are captured when the
- * guard is created and are applied with the same semantics as decoding.
+ * checks the schema's decoded type side with the default parse options:
+ * excess properties are ignored and refinement checks are enabled. For
+ * configurable validation, use a decoding API with `Schema.toType(schema)`.
  *
  * **Gotchas**
  *
  * Only causes made entirely of schema issues are converted to `false`. Causes
  * that contain defects, interruptions, or asynchronous work at this synchronous
  * boundary throw an `Error` whose cause is the underlying `Cause`.
- * Passing `disableChecks: true` skips refinement checks. This is an unsafe
- * optimization: the caller assumes responsibility for the resulting type
- * narrowing.
  *
  * @category guards
  * @since 3.10.0
  */
 export function is<S extends Schema.Constraint>(
-  schema: S,
-  options?: SchemaAST.ParseOptions
+  schema: S
 ): <I>(input: I) => input is I & S["Type"] {
-  return _is<S["Type"]>(schema.ast, options)
+  return _is<S["Type"]>(schema.ast)
 }
 
 /** @internal */
-export function _is<T>(ast: SchemaAST.AST, options: SchemaAST.ParseOptions = SchemaAST.defaultParseOptions) {
+export function _is<T>(ast: SchemaAST.AST) {
+  const options = SchemaAST.defaultParseOptions
   const typeAST = SchemaAST.toType(ast)
   let parser: Parser | undefined
   let compiledGuard: ((input: unknown) => boolean) | undefined
