@@ -24,6 +24,9 @@ const compileScoped = CompilerRegistry.makeScopedCompiler(compile)
  * the interpreter. Failed compilation is not retried for that entry.
  * Exceptions from executing a parser keep their normal behavior and do not
  * trigger fallback.
+ * Declaration type parameters are prepared on the declaration's first use,
+ * with their operations still lazy. New ASTs created inside its callback
+ * follow the normal registry policy.
  *
  * @category compilation
  * @since 4.0.0

@@ -553,24 +553,7 @@ export function decodeUnknownSync<S extends Schema.ConstraintDecoder<unknown>>(
   schema: S,
   options?: SchemaAST.ParseOptions
 ): (input: unknown, options?: SchemaAST.ParseOptions) => S["Type"] {
-  let entry: CompilerRegistry.Entry | undefined
-  return (input, overrideOptions) => {
-    entry ??= CompilerRegistry.resolve(schema.ast)
-    const parseOptions = options === undefined
-      ? overrideOptions ?? SchemaAST.defaultParseOptions
-      : mergeParseOptions(options, overrideOptions)
-    const validate = entry.validate
-    if (validate !== undefined && input !== InternalParser.missing) {
-      let output: unknown
-      try {
-        output = validate(input, parseOptions)
-      } catch (error) {
-        return throwSyncDefect(error)
-      }
-      if (output !== CompilerRegistry.invalid) return output as S["Type"]
-    }
-    return runParserSync<S["Type"]>(entry.decode, input, parseOptions)
-  }
+  return makeSync(schema.ast, options)
 }
 
 /**
@@ -915,7 +898,7 @@ export function encodeUnknownSync<S extends Schema.ConstraintEncoder<unknown>>(
   schema: S,
   options?: SchemaAST.ParseOptions
 ): (input: unknown, options?: SchemaAST.ParseOptions) => S["Encoded"] {
-  return asSync(encodeUnknownEffect(schema, options))
+  return makeSync(SchemaAST.flip(schema.ast), options)
 }
 
 /**
@@ -1048,17 +1031,27 @@ function asResult<T, E, R>(
   }
 }
 
-function asSync<T, E>(
-  parser: (input: E, options?: SchemaAST.ParseOptions) => Effect.Effect<T, SchemaIssue.Issue>
-): (input: E, options?: SchemaAST.ParseOptions) => T {
-  const parserExit = asExit(parser)
-  return (input: E, options?: SchemaAST.ParseOptions) => {
-    const exit = parserExit(input, options)
-    if (Exit.isSuccess(exit)) {
-      return exit.value
+function makeSync<T>(
+  ast: SchemaAST.AST,
+  options?: SchemaAST.ParseOptions
+): (input: unknown, options?: SchemaAST.ParseOptions) => T {
+  let entry: CompilerRegistry.Entry | undefined
+  return (input, overrideOptions) => {
+    entry ??= CompilerRegistry.resolve(ast)
+    const parseOptions = options === undefined
+      ? overrideOptions ?? SchemaAST.defaultParseOptions
+      : mergeParseOptions(options, overrideOptions)
+    const validate = entry.validate
+    if (validate !== undefined && input !== InternalParser.missing) {
+      let output: unknown
+      try {
+        output = validate(input, parseOptions)
+      } catch (error) {
+        return throwSyncDefect(error)
+      }
+      if (output !== CompilerRegistry.invalid) return output as T
     }
-    const issue = InternalSchemaCause.getSchemaIssueOrThrow(exit.cause, "Sync adapter can only throw schema issues")
-    throw new Error("Schema validation failed", { cause: issue })
+    return runParserSync<T>(entry.decode, input, parseOptions)
   }
 }
 

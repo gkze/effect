@@ -102,7 +102,11 @@ export const compile = (ast: SchemaAST.AST, resolve: ResolveParser): CompiledDec
         break
       case "Object":
         decoder = Runtime.fromDecode(() =>
-          makeComposedObjectDecode(selection.ast, resolve) ?? Runtime.makeComposedObjectFallback(selection.ast, resolve)
+          Runtime.applyChecks(
+            ast,
+            makeComposedObjectDecode(selection.ast, resolve) ??
+              Runtime.makeComposedObjectFallback(selection.ast, resolve)
+          )
         )
         break
     }

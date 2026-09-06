@@ -74,7 +74,21 @@ if (process.argv[3] === "multiple") {
 }
 assert.equal(suspendEvaluations, 0)
 
-for (const name of ["struct", "array", "tuple", "tagged", "record", "transformed", "transformedStruct", "middleware"]) {
+for (
+  const name of [
+    "struct",
+    "array",
+    "tuple",
+    "tagged",
+    "record",
+    "transformed",
+    "transformedStruct",
+    "checkedTransformedStruct",
+    "encodingCheckedTransformedStruct",
+    "asynchronous",
+    "middleware"
+  ]
+) {
   assert.equal(CompilerRegistry.resolve(schemas[name].ast).origin, "installed", name)
 }
 

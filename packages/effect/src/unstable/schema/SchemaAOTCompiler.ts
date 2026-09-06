@@ -42,11 +42,11 @@ const decoder = (ast: SchemaAST.AST): string | undefined => {
     case "Encoding":
       return `${helper("makeEncodingDecoder")}(ast,${helper("resolve")},()=>${localParser(ast)})`
     case "Object":
-      return `${helper("fromDecode")}(()=>${
+      return `${helper("fromDecode")}(()=>${helper("applyChecks")}(ast,${
         selection.ast.propertySignatures.length <= Codegen.maxGeneratedNodes
           ? composedObject(selection.ast)
           : `${helper("makeComposedObjectFallback")}(ast,${helper("resolve")})`
-      })`
+      }))`
   }
 }
 
@@ -69,8 +69,9 @@ const decoder = (ast: SchemaAST.AST): string | undefined => {
  * composed Struct decoders are static functions. Detailed diagnostic closures
  * and transformation orchestration still initialize lazily in shared runtime
  * support. Transformations and middleware are not replayed.
- * Repeated ASTs and shared dependencies are emitted and installed once by
- * identity. An empty array generates a module whose installation does nothing.
+ * Repeated ASTs and shared dependencies are installed once by identity. Fast
+ * paths can still inline dependency code into multiple parent decoders.
+ * An empty array generates a module whose installation does nothing.
  *
  * **Gotchas**
  *

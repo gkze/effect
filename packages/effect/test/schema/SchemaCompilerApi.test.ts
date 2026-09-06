@@ -53,20 +53,26 @@ describe("SchemaCompiler", () => {
   })
 
   it("retains one resolved entry across sync option paths", () => {
-    for (const firstOptions of [undefined, { reportInput: true }]) {
-      const schema = Schema.Struct({ value: Schema.String })
-      const decode = SchemaParser.decodeUnknownSync(schema)
-      const input = { value: "original" }
-      deepStrictEqual(decode(input, firstOptions), input)
+    for (const direction of ["decode", "encode"]) {
+      for (const firstOptions of [undefined, { reportInput: true }]) {
+        const schema = Schema.Struct({ value: Schema.String })
+        const makeSync = () =>
+          direction === "decode"
+            ? SchemaParser.decodeUnknownSync(schema)
+            : SchemaParser.encodeUnknownSync(schema)
+        const decode = makeSync()
+        const input = { value: "original" }
+        deepStrictEqual(decode(input, firstOptions), input)
 
-      SchemaCompiler.set(schema.ast, {
-        validate: () => ({ value: "replacement" }),
-        decode: () => Effect.succeed({ value: "replacement" })
-      })
+        SchemaCompiler.set(schema.ast, {
+          validate: () => ({ value: "replacement" }),
+          decode: () => Effect.succeed({ value: "replacement" })
+        })
 
-      deepStrictEqual(decode(input), input)
-      deepStrictEqual(decode(input, { reportInput: true }), input)
-      deepStrictEqual(SchemaParser.decodeUnknownSync(schema)(input), { value: "replacement" })
+        deepStrictEqual(decode(input), input)
+        deepStrictEqual(decode(input, { reportInput: true }), input)
+        deepStrictEqual(makeSync()(input), { value: "replacement" })
+      }
     }
   })
 
@@ -224,6 +230,43 @@ describe("SchemaJITCompiler", () => {
         }
       })
     )
+    strictEqual(reads, 2)
+  })
+
+  it("prepares declaration type parameters with the selective compiler on first use", () => {
+    const child = Schema.Struct({ value: Schema.String })
+    const schema = Schema.ReadonlySet(child)
+    Object.defineProperty(child.ast, "getParser", {
+      value() {
+        throw new Error("The declaration element must use its compiled decoder")
+      }
+    })
+    SchemaJITCompiler.enable(schema.ast)
+    const decode = SchemaParser.decodeUnknownSync(schema)
+    deepStrictEqual(decode(new Set([{ value: "a", extra: true }])), new Set([{ value: "a" }]))
+    throws(() => decode(new Set([{ value: 1 }])))
+  })
+
+  it("does not initialize unused declaration type parameter operations", () => {
+    const child = Schema.Struct({ value: Schema.String })
+    let reads = 0
+    SchemaCompiler.set(child.ast, {
+      get validate() {
+        reads++
+        return undefined
+      },
+      get decode() {
+        reads++
+        return Effect.succeed
+      }
+    })
+    const schema = Schema.ReadonlySet(child)
+    SchemaJITCompiler.enable(schema.ast)
+    const decode = SchemaParser.decodeUnknownSync(schema)
+    strictEqual(reads, 0)
+    deepStrictEqual(decode(new Set()), new Set())
+    strictEqual(reads, 0)
+    deepStrictEqual(decode(new Set([{ value: "a" }])), new Set([{ value: "a" }]))
     strictEqual(reads, 2)
   })
 

@@ -701,7 +701,7 @@ export interface Declaration extends ASTNode {
   readonly encodingRun: DeclarationRun | undefined
   /** @internal */
 
-  getParser(): SchemaParser.Parser
+  getParser(compile: SchemaParser.Compiler): SchemaParser.Parser
   /** @internal */
 
   recur(recur: (ast: AST) => AST): Declaration
@@ -756,11 +756,16 @@ export const Declaration: new(
     this.encodingRun = encodingRun
   }
   /** @internal */
-  getParser(): SchemaParser.Parser {
+  getParser(compile: SchemaParser.Compiler): SchemaParser.Parser {
     let run: ReturnType<typeof this.run>
     return (input, options) => {
       if (input === InternalParser.missing) return InternalParser.missingExit
-      return (run ??= this.run(this.typeParameters))(input, this, options)
+      if (run === undefined) {
+        // The callback can use public parsers, which must see these scoped entries.
+        for (const typeParameter of this.typeParameters) compile(typeParameter)
+        run = this.run(this.typeParameters)
+      }
+      return run(input, this, options)
     }
   }
   private _rebuild(

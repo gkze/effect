@@ -1973,6 +1973,88 @@
       "name": "schema-compiler",
       "fixtures": [
         {
+          "file": "suites/schema-compiler/fixtures/architecture.ts",
+          "defaults": {
+            "tier": 2,
+            "family": "compiler-architecture",
+            "operation": "decode-sync",
+            "astTags": ["Objects", "Declaration", "String", "Number", "Boolean"],
+            "implementation": "effect-compiled",
+            "path": "valid"
+          },
+          "cases": [
+            {
+              "name": "declaration-set-valid-effect",
+              "export": "declarationSet",
+              "scenario": "compiler-declaration-set-valid",
+              "implementation": "effect",
+              "size": 32
+            },
+            {
+              "name": "declaration-set-valid-effect-compiled",
+              "export": "declarationSetCompiled",
+              "scenario": "compiler-declaration-set-valid",
+              "size": 32
+            },
+            {
+              "name": "checked-transformed-struct-valid-effect",
+              "export": "checkedStructValidInterpreted",
+              "scenario": "compiler-checked-transformed-struct-valid",
+              "implementation": "effect",
+              "size": 32
+            },
+            {
+              "name": "checked-transformed-struct-invalid-effect",
+              "export": "checkedStructInvalidInterpreted",
+              "scenario": "compiler-checked-transformed-struct-invalid",
+              "implementation": "effect",
+              "path": "invalid",
+              "size": 32
+            },
+            {
+              "name": "sync-decode-valid-effect",
+              "export": "syncDecodeInterpreted",
+              "scenario": "compiler-sync-decode-valid",
+              "implementation": "effect",
+              "size": 3
+            },
+            {
+              "name": "sync-encode-valid-effect",
+              "export": "syncEncodeInterpreted",
+              "scenario": "compiler-sync-encode-valid",
+              "implementation": "effect",
+              "operation": "encode-sync",
+              "size": 3
+            },
+            {
+              "name": "checked-transformed-struct-valid-effect-compiled",
+              "export": "checkedStructValid",
+              "scenario": "compiler-checked-transformed-struct-valid",
+              "size": 32
+            },
+            {
+              "name": "checked-transformed-struct-invalid-effect-compiled",
+              "export": "checkedStructInvalid",
+              "scenario": "compiler-checked-transformed-struct-invalid",
+              "path": "invalid",
+              "size": 32
+            },
+            {
+              "name": "sync-decode-valid-effect-compiled",
+              "export": "syncDecode",
+              "scenario": "compiler-sync-decode-valid",
+              "size": 3
+            },
+            {
+              "name": "sync-encode-valid-effect-compiled",
+              "export": "syncEncode",
+              "scenario": "compiler-sync-encode-valid",
+              "operation": "encode-sync",
+              "size": 3
+            }
+          ]
+        },
+        {
           "file": "suites/schema-compiler/fixtures/strict-record.ts",
           "defaults": {
             "tier": 2,

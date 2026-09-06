@@ -104,12 +104,14 @@ export interface Decode {
  * and `is` are optional optimizations, not requirements for an AST to be usable.
  * The interpreter supplies only `decode` in this same format.
  *
- * The registry wraps these operations in an internal entry and owns dispatch.
+ * The registry wraps these operations in an internal entry.
  * Decoding tries `validate` when present, returning its output on success or
  * calling `decode` after `invalid`. Without `validate`, or for the {@link missing}
  * sentinel, it calls `decode` directly. Type guards prefer `is`, then `validate`,
  * then ordinary decoding.
  * They need no diagnostic replay when a fast path returns `false` or `invalid`.
+ * Synchronous decoding and encoding share an adapter that returns successful
+ * `validate` output directly, without wrapping it in an intermediate Effect.
  * Each operation is resolved lazily on first use, so unused fast paths need
  * not be compiled.
  *

@@ -569,10 +569,7 @@ export const select = (ast: SchemaAST.AST, local = false): Selection => {
   const emission = getEmission(ast, 0, local)
   if (emission !== "unsupported") return { _tag: "Type", ast, outputFree: emission === "is" }
   if (!local && ast.encoding !== undefined) return { _tag: "Encoding", ast }
-  if (
-    ast._tag === "Objects" && ast.indexSignatures.length === 0 &&
-    (local || ast.checks === undefined && ast.encodingChecks === undefined)
-  ) {
+  if (ast._tag === "Objects" && ast.indexSignatures.length === 0) {
     return { _tag: "Object", ast }
   }
   return { _tag: "Fallback" }

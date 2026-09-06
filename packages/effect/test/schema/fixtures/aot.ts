@@ -110,6 +110,24 @@ export const synchronous = {
     inputs: [{ 1: "one", [key]: "symbol" }, { 1: "one", extra: true }, { 1: 1 }]
   },
   transformed: { schema: transformed, inputs: ["2", "-1", false] },
+  checkedTransformedStruct: {
+    schema: Schema.Struct({ value: transformed }).check(Schema.makeFilter((output) => {
+      events.push("struct check")
+      return output.value < 10 && Object.keys(output).length === 1
+    })),
+    inputs: [{ value: "2", extra: true }, { value: "12" }, { value: "-1" }, {}]
+  },
+  encodingCheckedTransformedStruct: {
+    schema: Schema.Struct({ value: transformed }).pipe(
+      Schema.flip,
+      Schema.check(Schema.makeFilter((input) => {
+        events.push("encoding check")
+        return input.value !== "02"
+      })),
+      Schema.flip
+    ),
+    inputs: [{ value: "2" }, { value: "02" }, { value: "-1" }]
+  },
   transformedStruct: {
     schema: Schema.Struct({ before: Schema.String, value: transformed, after: Schema.Boolean }),
     inputs: [
@@ -125,9 +143,15 @@ export const synchronous = {
 } satisfies Record<string, Fixture>
 
 export const asyncFixture = {
-  schema: Schema.Struct({ before: Schema.String, value: asynchronous, after: Schema.Boolean }),
+  schema: Schema.Struct({ before: Schema.String, value: asynchronous, after: Schema.Boolean }).check(
+    Schema.makeFilter((output) => {
+      events.push("async struct check")
+      return output.value < 10
+    })
+  ),
   inputs: [
     { before: "a", value: "2", after: true },
+    { before: "a", value: "12", after: true },
     { before: "a", value: "-1", after: true },
     { before: "a", value: "2", after: "invalid" }
   ]

@@ -127,6 +127,11 @@ On first use, a parser reuses the cached entry or creates and caches a compiled
 or interpreted decoder. Children use the same cache, so an interpreted parent
 can have compiled children.
 
+On first use of a Declaration, its declared type parameters are prepared through
+the same resolver before its callback runs. Their operations remain lazy. This
+lets callbacks using public parsers find selectively compiled children; new ASTs
+created inside a callback follow the normal registry policy.
+
 Choose how to populate it:
 
 | API                                | Behavior                                                                                                                                             |
@@ -177,9 +182,17 @@ contains the output, so no detailed pass is needed. `invalid` contains no error
 location or explanation, so failure requires one detailed `decode` pass. This
 favors valid inputs at the cost of traversing invalid inputs again, only where
 repetition is safe. Without `validate`, or for the `missing` sentinel, it calls
-`decode` directly. The registry owns this dispatch so interpreter, JIT, and AOT
-implementations need not duplicate it. Detailed traversal does not restart fast
-validation at every child.
+`decode` directly. Interpreter, JIT, and AOT implementations supply the operations
+without implementing this dispatch. The synchronous decode and encode adapters
+share a direct version of it, returning successful `validate` output without an
+intermediate Effect. Encoding uses the flipped AST; when it equals the original,
+both adapters use the same entry and execution path. Detailed traversal does not
+restart fast validation at every child.
+
+A composed Struct decoder can compile its fields, including transformations,
+then apply the Struct's checks to the decoded output. Both stages read the same
+AST, and only the complete decoder is installed. Checks run after stripping and
+successful field decoding, without replaying transformations.
 
 `SchemaParser.is(schema)` and `Schema.is(schema)` check `toType(schema.ast)`
 with default parse options: excess properties are ignored and checks are enabled.
