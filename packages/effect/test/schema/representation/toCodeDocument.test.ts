@@ -1067,7 +1067,7 @@ describe("toCodeDocument", () => {
       assertSchema(
         { schema: Schema.Tuple([Schema.optionalKey(Schema.String)]) },
         {
-          codes: makeCode(`Schema.Tuple([Schema.optionalKey(Schema.String)])`, "readonly [string?]")
+          codes: makeCode(`Schema.Tuple([Schema.optionalKey(Schema.String)])`, "readonly [(string)?]")
         }
       )
       assertSchema(
@@ -1075,7 +1075,7 @@ describe("toCodeDocument", () => {
         {
           codes: makeCode(
             `Schema.Tuple([Schema.optionalKey(Schema.String)]).annotate({ "description": "a" })`,
-            "readonly [string?]"
+            "readonly [(string)?]"
           )
         }
       )

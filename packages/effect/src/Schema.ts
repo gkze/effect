@@ -38,6 +38,7 @@ import { effectIsExit } from "./internal/effect.ts"
 import * as InternalGraph from "./internal/graph.ts"
 import * as InternalRecord from "./internal/record.ts"
 import * as InternalAnnotations from "./internal/schema/annotations.ts"
+import { formats as jsonSchemaFormats } from "./internal/schema/jsonSchemaFormat.ts"
 import * as InternalMake from "./internal/schema/make.ts"
 import * as InternalStandardSchema from "./internal/schema/standardSchema.ts"
 import * as InternalToCodec from "./internal/schema/toCodec.ts"
@@ -8413,6 +8414,115 @@ export function isPropertyNames(keySchema: Constraint, annotations?: Annotations
       ...annotations
     }
   )
+}
+
+/**
+ * Validates values of string properties outside the declared names and patterns.
+ *
+ * **When to use**
+ *
+ * Use to enforce JSON Schema `additionalProperties` without constraining declared
+ * properties or properties matched by `patternProperties`.
+ *
+ * **Details**
+ *
+ * Values are checked against the encoded side of `valueSchema`. Patterns use the
+ * native regular expression engine and must come from trusted sources.
+ *
+ * @category validation
+ * @since 4.0.0
+ */
+export function isAdditionalProperties(
+  options: { readonly properties: ReadonlyArray<string>; readonly patterns: ReadonlyArray<string> },
+  valueSchema: Constraint,
+  annotations?: Annotations.Filter
+) {
+  options = { properties: [...options.properties], patterns: [...options.patterns] }
+  const names = new Set(options.properties)
+  const patterns = options.patterns.map((source) => new globalThis.RegExp(source))
+  const value = toEncoded(valueSchema)
+  const parser = SchemaParser._issue(value.ast)
+  return makeFilter<object>((input, ast, parseOptions) => {
+    const issues: Array<SchemaIssue.Issue> = []
+    for (const key of Object.keys(input)) {
+      if (names.has(key) || patterns.some((pattern) => pattern.test(key))) continue
+      const issue = parser((input as Record<string, unknown>)[key], parseOptions)
+      if (issue !== undefined) {
+        issues.push(new SchemaIssue.Pointer([key], issue))
+        if (parseOptions.errors === "first") break
+      }
+    }
+    return Arr.isArrayNonEmpty(issues) ? new SchemaIssue.Composite(ast, issues, input, parseOptions) : true
+  }, {
+    expected: "an object with additional property values matching the schema",
+    representation: { id: "effect/schema/isAdditionalProperties", payload: options, schemas: [value.ast] },
+    toJsonSchema: ({ schemas }) => ({
+      type: "object",
+      properties: Object.fromEntries(options.properties.map((name) => [name, {}])),
+      patternProperties: Object.fromEntries(options.patterns.map((pattern) => [pattern, {}])),
+      additionalProperties: schemas[0]
+    }),
+    toCode: ({ schemas }) => ({ runtime: `Schema.isAdditionalProperties(${format(options)}, ${schemas[0].runtime})` }),
+    [InternalAnnotations.STRUCTURAL_ANNOTATION_KEY]: true,
+    ...annotations
+  })
+}
+
+/**
+ * Validates a value against the branch selected by a condition schema.
+ *
+ * **Details**
+ *
+ * All three schemas are checked on their encoded sides. A value matching
+ * `condition` must match `onTrue`; every other value must match `onFalse`.
+ * This corresponds to JSON Schema `if`, `then`, and `else`.
+ *
+ * @category validation
+ * @since 4.0.0
+ */
+export function isConditional(
+  condition: Constraint,
+  onTrue: Constraint,
+  onFalse: Constraint,
+  annotations?: Annotations.Filter
+) {
+  const schemas = [condition, onTrue, onFalse].map((schema) => toEncoded(schema).ast)
+  const parsers = schemas.map((ast) => SchemaParser._issue(ast))
+  return makeFilter<unknown>((input, _ast, options) => {
+    return parsers[parsers[0](input, options) === undefined ? 1 : 2](input, options) ?? true
+  }, {
+    expected: "a value matching its conditional schema branch",
+    representation: { id: "effect/schema/isConditional", payload: null, schemas },
+    // oxlint-disable-next-line unicorn/no-thenable -- JSON Schema conditional keyword
+    toJsonSchema: ({ schemas }) => ({ if: schemas[0], then: schemas[1], else: schemas[2] }),
+    toCode: ({ schemas }) => ({
+      runtime: `Schema.isConditional(${schemas[0].runtime}, ${schemas[1].runtime}, ${schemas[2].runtime})`
+    }),
+    [InternalAnnotations.STRUCTURAL_ANNOTATION_KEY]: true,
+    ...annotations
+  })
+}
+
+/**
+ * Validates a string using a supported JSON Schema format.
+ *
+ * **Details**
+ *
+ * Supports absolute RFC 3986 URIs, ASCII dot-atom email addresses with a
+ * dotted domain, RFC 3339 full dates, and native ECMAScript regular expressions.
+ * Format checks apply to string values and do not transform them.
+ *
+ * @category validation
+ * @since 4.0.0
+ */
+export function isFormat(format: "uri" | "email" | "date" | "regex", annotations?: Annotations.Filter) {
+  return makeFilter<string>(jsonSchemaFormats[format], {
+    expected: `a string matching the ${format} format`,
+    representation: { id: "effect/schema/isFormat", payload: format },
+    toJsonSchema: () => ({ format }),
+    toCode: () => ({ runtime: `Schema.isFormat(${JSON.stringify(format)})` }),
+    ...annotations
+  })
 }
 /**
  * Validates that all items in an array are unique according to Effect equality.

@@ -128,3 +128,9 @@ describe("Channel.runCount", () => {
     expect(Channel.runCount(Channel.fromIterable([1, 2, 3]))).type.toBe<Effect.Effect<number>>()
   })
 })
+
+describe("decodeText", () => {
+  it("derives decoder options from the host's TextDecoder constructor", () => {
+    expect<Parameters<typeof Channel.decodeText>[1]>().type.toBe<ConstructorParameters<typeof TextDecoder>[1]>()
+  })
+})

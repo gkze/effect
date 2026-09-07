@@ -224,7 +224,6 @@ export function toCodeDocument(
   const sorted = topologicalSort(document.references)
   const sanitizedReferences = new Map<string, string>()
   const uniqueIdentifiers = new Set<string>()
-  let compilingRecursiveDefinition = false
   let explicitSuspendDepth = 0
 
   for (const { $ref } of sorted.nonRecursives) ensureUniqueIdentifier($ref)
@@ -236,9 +235,7 @@ export function toCodeDocument(
   }))
   const recursives: Record<string, SchemaRepresentation.Code> = {}
   for (const [$ref, representation] of Object.entries(sorted.recursives)) {
-    compilingRecursiveDefinition = true
     InternalRecord.assignProperty(recursives, ensureUniqueIdentifier($ref), recur(representation, ["references", $ref]))
-    compilingRecursiveDefinition = false
   }
   const codes = document.representations.map((representation, index) =>
     recur(representation, ["representations", index])
@@ -327,7 +324,13 @@ export function toCodeDocument(
     method: "annotate" | "annotateKey" = "annotate"
   ): string {
     const rendered = renderAnnotations(annotations)
-    return rendered === undefined ? "" : `.${method}(${rendered})`
+    // Persisted JSON Schema documentation values need not satisfy the schema's
+    // Type. Preserve this metadata without changing the generated codec's type.
+    const metadata =
+      annotations !== undefined && (Object.hasOwn(annotations, "default") || Object.hasOwn(annotations, "examples"))
+        ? " as Schema.Annotations.Annotations"
+        : ""
+    return rendered === undefined ? "" : `.${method}(${rendered}${metadata})`
   }
 
   function compileCheck(
@@ -382,7 +385,7 @@ export function toCodeDocument(
       }
       const identifier = ensureUniqueIdentifier(representation.$ref)
       if (
-        compilingRecursiveDefinition && explicitSuspendDepth === 0 &&
+        path[0] === "references" && explicitSuspendDepth === 0 &&
         Object.hasOwn(sorted.recursives, representation.$ref)
       ) {
         return makeCode(`Schema.suspend((): Schema.Codec<${identifier}> => ${identifier})`, identifier)
@@ -479,7 +482,7 @@ export function toCodeDocument(
             `${element.isOptional ? "Schema.optionalKey(" : ""}${type.runtime}${element.isOptional ? ")" : ""}${
               runtimeAnnotate(element.annotations, "annotateKey")
             }`,
-            `${type.Type}${element.isOptional ? "?" : ""}`
+            element.isOptional ? `(${type.Type})?` : type.Type
           )
         })
         const rest = representation.rest.map((item, index) => recur(item, [...path, "rest", index]))
@@ -545,15 +548,12 @@ export function toCodeDocument(
         const indexTypes = indexSignatures.map((signature) =>
           `readonly [x: ${signature.parameter.Type}]: ${signature.type.Type}`
         )
-        if (properties.length === 0) {
-          return makeCode(
-            `Schema.StructWithRest(Schema.Struct({ ${propertyRuntimes} }), [${indexRuntimes}])`,
-            `{ ${indexTypes.join(", ")} }`
-          )
-        }
         return makeCode(
           `Schema.StructWithRest(Schema.Struct({ ${propertyRuntimes} }), [${indexRuntimes}])`,
-          [`{ ${propertyTypes} }`, ...indexTypes.map((indexType) => `{ ${indexType} }`)].join(" & ")
+          [
+            ...(properties.length > 0 ? [`{ ${propertyTypes} }`] : []),
+            ...indexTypes.map((indexType) => `{ ${indexType} }`)
+          ].join(" & ")
         )
       }
       case "Union": {

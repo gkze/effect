@@ -266,13 +266,20 @@ describe("JsonSchema", () => {
           { dependentRequired: { value: ["other"] } },
           { $vocabulary: { "https://example.com/vocabulary": true } },
           { contentSchema: {} },
-          { deprecated: true }
+          { deprecated: "custom" }
         ]
       ) {
         assert.throws(
           () => JsonSchema.fromSchemaDraft07(schema),
           /Cannot convert JSON Schema keyword .* to Draft 2020-12/
         )
+      }
+    })
+
+    it("preserves boolean deprecated annotations without adding validation constraints", () => {
+      for (const deprecated of [true, false]) {
+        const input = { type: "string", deprecated }
+        assert.deepStrictEqual(JsonSchema.fromSchemaDraft07(input).schema, input)
       }
     })
 

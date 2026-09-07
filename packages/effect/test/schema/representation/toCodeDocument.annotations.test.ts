@@ -319,7 +319,7 @@ describe("SchemaRepresentation.toCodeDocument annotations", () => {
       },
       {
         runtime: `Schema.TupleWithRest(Schema.Tuple([Schema.optionalKey(Schema.String)]), [Schema.Number])`,
-        Type: `readonly [string?, ...Array<number>]`
+        Type: `readonly [(string)?, ...Array<number>]`
       },
       {
         runtime: `Schema.Struct({ 1: Schema.Boolean })`,
@@ -524,7 +524,7 @@ describe("SchemaRepresentation.toCodeDocument annotations", () => {
       references: {}
     })
 
-    assert.strictEqual(output.codes[0].Type, `{ readonly [x: string]: number, readonly [x: symbol]: boolean }`)
+    assert.strictEqual(output.codes[0].Type, `{ readonly [x: string]: number } & { readonly [x: symbol]: boolean }`)
   })
 
   it("generates a single-literal Union as Literal", () => {
@@ -569,7 +569,7 @@ describe("SchemaRepresentation.toCodeDocument annotations", () => {
     })
 
     assert.deepStrictEqual(output.references, {
-      nonRecursives: [{ $ref: "B", code: { runtime: "A", Type: "A" } }],
+      nonRecursives: [{ $ref: "B", code: { runtime: "Schema.suspend((): Schema.Codec<A> => A)", Type: "A" } }],
       recursives: { A: { runtime: "Schema.suspend((): Schema.Codec<A> => A)", Type: "A" } }
     })
   })
@@ -593,6 +593,31 @@ describe("SchemaRepresentation.toCodeDocument annotations", () => {
           references: { Value: { _tag: "Reference", $ref: "Missing" } }
         }),
       `Invalid reference Missing\n  at ["references"]["Value"]["$ref"]`
+    )
+  })
+  it("parenthesizes optional tuple intersections and keeps repeated string indexes separate", () => {
+    const element = Schema.StructWithRest(Schema.Struct({}), [
+      Schema.Record(Schema.String, Schema.String),
+      Schema.Record(Schema.String.check(Schema.isPattern(/^x/)), Schema.String)
+    ])
+    const output = SchemaRepresentation.toCodeDocument(SchemaRepresentation.toRepresentations([
+      Schema.Tuple([Schema.optionalKey(element)]).ast
+    ]))
+    assert.strictEqual(
+      output.codes[0].Type,
+      "readonly [({ readonly [x: string]: string } & { readonly [x: string]: string })?]"
+    )
+  })
+
+  it("preserves documentation defaults and examples that do not validate", () => {
+    const output = SchemaRepresentation.toCodeDocument({
+      representations: [{ _tag: "Number", checks: [], annotations: { default: null, examples: ["documentation"] } }],
+      references: {}
+    })
+    assert.strictEqual(output.codes[0].Type, "number")
+    assert.strictEqual(
+      output.codes[0].runtime,
+      "Schema.Number.annotate({ \"default\": null, \"examples\": [\"documentation\"] } as Schema.Annotations.Annotations)"
     )
   })
 })

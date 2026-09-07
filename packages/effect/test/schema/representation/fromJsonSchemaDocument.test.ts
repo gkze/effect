@@ -1990,16 +1990,15 @@ describe("fromJsonSchemaDocument", () => {
     })
 
     it("properties & additionalProperties", () => {
-      throws(
-        () =>
-          toSchemaFromJsonSchemaDocument(JsonSchema.fromSchemaDraft2020_12({
-            type: "object",
-            properties: { a: { type: "string" } },
-            required: ["a"],
-            additionalProperties: { type: "boolean" }
-          })),
-        `Unsupported object keyword scopes\n  at ["schema"]`
-      )
+      const is = Schema.is(toSchemaFromJsonSchemaDocument(JsonSchema.fromSchemaDraft2020_12({
+        type: "object",
+        properties: { a: { type: "string" } },
+        required: ["a"],
+        additionalProperties: { type: "boolean" }
+      })))
+      assertTrue(is({ a: "ok", extra: true }))
+      assertFalse(is({ a: true }))
+      assertFalse(is({ a: "ok", extra: "wrong" }))
     })
 
     it("supports a closed pattern that matches every key", () => {
@@ -2504,34 +2503,23 @@ describe("fromJsonSchemaDocument", () => {
   })
 
   describe("$ref", () => {
-    it("rejects a reference below a definition instead of resolving its final token", () => {
-      throws(
-        () =>
-          toSchemaFromJsonSchemaDocument(
-            JsonSchema.fromSchemaDraft07({
-              definitions: {
-                inner: { type: "number" },
-                outer: {
-                  type: "object",
-                  properties: {
-                    inner: { type: "string" }
-                  }
-                }
-              },
-              type: "object",
-              properties: {
-                copy: { $ref: "#/definitions/outer/properties/inner" }
-              }
-            })
-          ),
-        `Unsupported reference "#/$defs/outer/properties/inner"\n  at ["schema"]["properties"]["copy"]["$ref"]`
-      )
+    it("resolves a pointer below a definition without aliasing its final token", () => {
+      const schema = toSchemaFromJsonSchemaDocument(JsonSchema.fromSchemaDraft07({
+        definitions: {
+          inner: { type: "number" },
+          outer: { type: "object", properties: { inner: { type: "string" } } }
+        },
+        type: "object",
+        properties: { copy: { $ref: "#/definitions/outer/properties/inner" } }
+      }))
+      assertTrue(Schema.is(schema)({ copy: "ok" }))
+      assertFalse(Schema.is(schema)({ copy: 1 }))
     })
 
-    it("rejects an empty reference", () => {
+    it("rejects an unproductive root reference cycle", () => {
       throws(
         () => toSchemaFromJsonSchemaDocument(JsonSchema.fromSchemaDraft2020_12({ $ref: "" })),
-        `Unsupported reference ""\n  at ["schema"]["$ref"]`
+        `Invalid reference Root\n  at ["schema"]["$ref"]`
       )
     })
 
@@ -5451,8 +5439,6 @@ describe("fromJsonSchemaDocument", () => {
       const [keyword, value] of [
         ["$dynamicRef", "#node"],
         ["contains", { type: "string" }],
-        ["dependentRequired", { a: ["b"] }],
-        ["dependentSchemas", { a: { required: ["b"] } }],
         ["unevaluatedItems", false],
         ["unevaluatedProperties", false]
       ] as const
@@ -5461,19 +5447,6 @@ describe("fromJsonSchemaDocument", () => {
         throws(
           () => toSchemaFromJsonSchemaDocument(JsonSchema.fromSchemaDraft2020_12({ [keyword]: value })),
           `Unsupported JSON Schema keyword "${keyword}"\n  at ["schema"][${JSON.stringify(keyword)}]`
-        )
-      })
-    }
-
-    for (const branch of ["then", "else"] as const) {
-      it(`if/${branch}`, () => {
-        throws(
-          () =>
-            toSchemaFromJsonSchemaDocument(JsonSchema.fromSchemaDraft2020_12({
-              if: { type: "string" },
-              [branch]: false
-            })),
-          `Unsupported JSON Schema keyword "if"\n  at ["schema"]["if"]`
         )
       })
     }

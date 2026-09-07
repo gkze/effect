@@ -1345,6 +1345,48 @@ export const isPropertyNamesReviver: FilterReviver<null> = makeReviverFilter(
 )
 
 /**
+ * Reviver for persisted `isAdditionalProperties` checks.
+ *
+ * @see {@link Schema.isAdditionalProperties}
+ * @category validation
+ * @since 4.0.0
+ */
+export const isAdditionalPropertiesReviver: FilterReviver<{
+  readonly properties: ReadonlyArray<string>
+  readonly patterns: ReadonlyArray<string>
+}> = makeReviverFilter(
+  "effect/schema/isAdditionalProperties",
+  Schema.Struct({ properties: Schema.Array(Schema.String), patterns: Schema.Array(Schema.String) }),
+  ({ annotations, payload, schemas }) => Schema.isAdditionalProperties(payload, schemas[0], annotations)
+)
+
+/**
+ * Reviver for persisted `isConditional` checks.
+ *
+ * @see {@link Schema.isConditional}
+ * @category validation
+ * @since 4.0.0
+ */
+export const isConditionalReviver: FilterReviver<null> = makeReviverFilter(
+  "effect/schema/isConditional",
+  Schema.Null,
+  ({ annotations, schemas }) => Schema.isConditional(schemas[0], schemas[1], schemas[2], annotations)
+)
+
+/**
+ * Reviver for persisted `isFormat` checks.
+ *
+ * @see {@link Schema.isFormat}
+ * @category validation
+ * @since 4.0.0
+ */
+export const isFormatReviver: FilterReviver<"uri" | "email" | "date" | "regex"> = makeReviverFilter(
+  "effect/schema/isFormat",
+  Schema.Literals(["uri", "email", "date", "regex"]),
+  ({ annotations, payload }) => Schema.isFormat(payload, annotations)
+)
+
+/**
  * Reviver for persisted `isUnique` checks.
  *
  * **When to use**
@@ -2148,6 +2190,9 @@ const jsonSchemaRevivers: ReadonlyArray<AnyReviver> = [
   isMinPropertiesReviver,
   isMaxPropertiesReviver,
   isPropertyNamesReviver,
+  isAdditionalPropertiesReviver,
+  isConditionalReviver,
+  isFormatReviver,
   isUniqueReviver
 ]
 
@@ -2182,11 +2227,23 @@ const jsonSchemaRevivers: ReadonlyArray<AnyReviver> = [
 export interface FromJsonSchemaOptions {
   readonly onEnter?: ((schema: JsonSchema.JsonSchema) => JsonSchema.JsonSchema) | undefined
   /**
+   * Supplies external documents by absolute retrieval URI. Documents must already
+   * be converted to Draft 2020-12. The importer performs no network requests.
+   */
+  readonly references?: Readonly<Record<string, JsonSchema.Document<"draft-2020-12">>> | undefined
+  /**
    * Controls how reached JSON Schema regular expression patterns are imported.
    *
    * @default "error"
    */
   readonly patterns?: "error" | "ignore" | "apply" | undefined
+  /**
+   * Applies supported string format assertions when set to `"apply"`. Unknown
+   * formats then throw. The default preserves format annotations without checks.
+   *
+   * @default "ignore"
+   */
+  readonly formats?: "ignore" | "apply" | undefined
 }
 
 /**
@@ -2830,18 +2887,20 @@ export function fromRepresentations(
  *
  * **Gotchas**
  *
- * - `$dynamicRef`, `contains`, `dependentRequired`, `dependentSchemas`, `not`, active `if` / `then` / `else`,
+ * - `$dynamicRef`, `contains`, `not`,
  *   `unevaluatedItems`, and `unevaluatedProperties` throw an `Unsupported JSON Schema keyword` error. Inactive
  *   conditional keywords and `minContains` / `maxContains` without `contains` have no validation effect and are ignored.
- * - Objects and arrays used as `const` values or `enum` members throw an `Unsupported structured JSON Schema value`
- *   error.
+ * - Objects and arrays used as `const` values or reachable `enum` members throw an `Unsupported structured JSON Schema
+ *   value` error. Structured enum members excluded by an explicit primitive type are discarded.
  * - Intersections of overlapping unions are limited to disjoint root-type partitions and finite primitive `anyOf`
  *   literal sets. Other union intersections, including cases that would duplicate a nested choice, throw an
  *   `Unsupported intersection of overlapping unions` error.
  * - Unknown extension keywords are ignored and their semantics are not enforced.
- * - Only direct local references to top-level definitions in the form `#/$defs/<escaped-token>` are supported. Root
- *   references, external references, and pointers below a definition throw an `Unsupported reference` error. A direct
- *   reference to a missing definition throws an `Invalid reference` error.
+ * - References support schema pointers, root recursion, `$id`, and `$anchor`. External resources must be supplied
+ *   through `references`; the importer never fetches documents. Missing registered targets throw an `Invalid reference`
+ *   error, and unavailable external resources throw an `Unsupported reference` error.
+ * - Formats are annotations by default. Set `formats: "apply"` to assert `uri`, `email`, `date`, and `regex`; other
+ *   reached formats then throw. Format assertions are outside the default semantic round-trip guarantee.
  * - Built-in declarations and checks are reconstructed with importer-owned revivers.
  * - Pattern constraints reached during translation cause an error by default. Use `patterns: "apply"` only for trusted
  *   documents, or `patterns: "ignore"` to weaken validation explicitly; ignored patterns are outside the round-trip
@@ -2875,14 +2934,14 @@ export function fromJsonSchemaDocument(
  * - Only definitions reachable from a root are translated.
  * - Unsupported standard validation and applicator keywords throw an `Unsupported JSON Schema keyword` error. Unknown
  *   extension keywords are ignored and their semantics are not enforced.
- * - Objects and arrays used as `const` values or `enum` members throw an `Unsupported structured JSON Schema value`
- *   error.
+ * - Objects and arrays used as `const` values or reachable `enum` members throw an `Unsupported structured JSON Schema
+ *   value` error. Structured enum members excluded by an explicit primitive type are discarded.
  * - Intersections of overlapping unions are limited to disjoint root-type partitions and finite primitive `anyOf`
  *   literal sets. Other union intersections, including cases that would duplicate a nested choice, throw an
  *   `Unsupported intersection of overlapping unions` error.
- * - Only direct local references to top-level definitions in the form `#/$defs/<escaped-token>` are supported. Root
- *   references, external references, and pointers below a definition throw an `Unsupported reference` error. A direct
- *   reference to a missing definition throws an `Invalid reference` error.
+ * - References support schema pointers, root recursion, `$id`, and `$anchor`. External resources must be supplied
+ *   through `references`; the importer never fetches documents. Missing registered targets throw an `Invalid reference`
+ *   error, and unavailable external resources throw an `Unsupported reference` error.
  * - Pattern constraints reached during translation cause an error by default. Use `patterns: "apply"` only for trusted
  *   documents, or `patterns: "ignore"` to weaken validation explicitly.
  * - Callback results are used directly, and exceptions raised by a callback pass through unchanged.

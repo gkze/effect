@@ -1,4 +1,4 @@
-import * as JsonSchema from "../../JsonSchema.ts"
+import type * as JsonSchema from "../../JsonSchema.ts"
 import { remainder } from "../../Number.ts"
 import type * as Schema from "../../Schema.ts"
 import * as InternalAST from "../../SchemaAST.ts"
@@ -6,6 +6,8 @@ import type * as SchemaRepresentation from "../../SchemaRepresentation.ts"
 import { errorWithPath } from "../errors.ts"
 import * as InternalRecord from "../record.ts"
 import { fromRepresentation, fromRepresentations } from "./fromRepresentation.ts"
+import { formats } from "./jsonSchemaFormat.ts"
+import { makeReferenceIndex } from "./jsonSchemaReferences.ts"
 
 type Path = ReadonlyArray<string | number>
 type Representation = SchemaRepresentation.Representation
@@ -163,7 +165,8 @@ function unknownJsonSchemas(representation: Representation): Representation {
           ...element,
           type: unknownJsonSchemas(element.type)
         })),
-        rest: representation.rest.map(unknownJsonSchemas)
+        rest: representation.rest.map(unknownJsonSchemas),
+        checks: representation.checks.map(unknownJsonSchemaCheck)
       }
     case "Objects":
       return {
@@ -179,7 +182,11 @@ function unknownJsonSchemas(representation: Representation): Representation {
         checks: representation.checks.map(unknownJsonSchemaCheck)
       }
     case "Union":
-      return { ...representation, types: representation.types.map(unknownJsonSchemas) }
+      return {
+        ...representation,
+        types: representation.types.map(unknownJsonSchemas),
+        checks: representation.checks.map(unknownJsonSchemaCheck)
+      }
     default:
       return representation
   }
@@ -205,6 +212,7 @@ function translateJsonSchemaMultiDocument(
   options?: SchemaRepresentation.FromJsonSchemaOptions,
   singleRoot = false
 ): SchemaRepresentation.MultiDocument {
+  const referenceIndex = makeReferenceIndex(document, options?.references, singleRoot)
   const definitionCache = new Map<string, ImportedJsonSchemaRepresentation | null>()
   const reachableDefinitions = new Map<string, Path>()
   const objectScopesByProperties = new WeakMap<
@@ -243,11 +251,12 @@ function translateJsonSchemaMultiDocument(
       }
       return cached
     }
-    if (!Object.hasOwn(document.definitions, key)) {
+    const target = referenceIndex.targets.get(key)
+    if (target === undefined) {
       throw errorWithPath(`Invalid reference ${key}`, [...path, "$ref"])
     }
     definitionCache.set(key, null)
-    const representation = recur(document.definitions[key], ["definitions", key])
+    const representation = recur(target.input, target.path, target.base)
     definitionCache.set(key, representation)
     return representation
   }
@@ -465,7 +474,14 @@ function translateJsonSchemaMultiDocument(
         scopes[0].patterns.length > 0
       ? scopes[0]
       : undefined
-    if (!hasFiniteKeyDomain && requiresFiniteKeyDomain && closedPatternScope === undefined) {
+    const typedPropertyScope = scopes.length === 1 && (scopes[0].hasProperties || scopes[0].patterns.length > 0) &&
+        scopes[0].additionalProperties._tag !== "Unknown" && scopes[0].additionalProperties._tag !== "Never"
+      ? scopes[0]
+      : undefined
+    if (
+      !hasFiniteKeyDomain && requiresFiniteKeyDomain && closedPatternScope === undefined &&
+      typedPropertyScope === undefined
+    ) {
       throw errorWithPath("Unsupported object keyword scopes", path)
     }
 
@@ -497,7 +513,7 @@ function translateJsonSchemaMultiDocument(
     if (!hasFiniteKeyDomain) {
       // Closed patterned scopes constrain key names separately from values. Keep
       // unmatched keys in the decoded object so the propertyNames check sees them.
-      const additionalProperties = closedPatternScope === undefined ?
+      const additionalProperties = closedPatternScope === undefined && typedPropertyScope === undefined ?
         combineTypes(
           scopes.map((scope) => scope.additionalProperties),
           [...path, "additionalProperties"]
@@ -547,6 +563,17 @@ function translateJsonSchemaMultiDocument(
           mode: "anyOf",
           checks: []
         }])
+      ]
+    }
+
+    if (typedPropertyScope !== undefined) {
+      checks = [
+        ...checks,
+        jsonSchemaFilter("effect/schema/isAdditionalProperties", {
+          properties: Array.from(typedPropertyScope.properties).filter(([, property]) => property.type !== undefined)
+            .map(([name]) => name),
+          patterns: typedPropertyScope.patterns.map((pattern) => pattern.source)
+        }, [typedPropertyScope.additionalProperties])
       ]
     }
 
@@ -675,7 +702,7 @@ function translateJsonSchemaMultiDocument(
       const match = rightByValue.get(value)
       if (match !== undefined) types.push(combine(representation, annotate(match, right.annotations), path))
     }
-    return makeUnion(left, types)
+    return makeUnion({ ...left, checks: [...left.checks, ...right.checks] }, types)
   }
 
   function combineUnionWithType(
@@ -726,6 +753,32 @@ function translateJsonSchemaMultiDocument(
     throw errorWithPath("Unsupported intersection of overlapping unions", path)
   }
 
+  function isSimpleTypeConstraint(type: ImportedJsonSchemaRepresentation): boolean {
+    if (type._tag === "Reference" || type._tag === "Suspend" || type._tag === "Union") return false
+    if (type._tag === "Number") {
+      return type.checks.every((check) =>
+        check.representation?.id === "effect/schema/isFinite" ||
+        check.representation?.id === "effect/schema/isInt"
+      )
+    }
+    if (type.checks.length > 0) return false
+    switch (type._tag) {
+      case "Null":
+      case "String":
+      case "Boolean":
+        return true
+      case "Arrays":
+        return type.elements.length === 0 && type.rest.length === 1 && type.rest[0]._tag === "Unknown"
+      case "Objects":
+        return type.propertySignatures.length === 0 && type.indexSignatures.length === 1 &&
+          type.indexSignatures[0].parameter._tag === "String" &&
+          type.indexSignatures[0].parameter.checks.length === 0 &&
+          type.indexSignatures[0].type._tag === "Unknown"
+      default:
+        return false
+    }
+  }
+
   function combinePartition(
     partition: SchemaRepresentation.Union,
     other: SchemaRepresentation.Union,
@@ -734,9 +787,15 @@ function translateJsonSchemaMultiDocument(
   ): ImportedJsonSchemaRepresentation {
     const partitionTypes = partition.types as ReadonlyArray<ImportedJsonSchemaRepresentation>
     const otherTypes = other.types as ReadonlyArray<ImportedJsonSchemaRepresentation>
+    // Disjoint primitive type constraints preserve the nested choice: a value
+    // cannot satisfy branches duplicated into two different root types.
+    const simplePartition = partitionTypes.every(isSimpleTypeConstraint)
     for (const type of otherTypes) {
       const mask = rootMask(type)
-      if (partitionTypes.filter((member) => (rootMask(member) & mask) !== 0).length > 1 && hasChoices(type)) {
+      if (
+        !simplePartition &&
+        partitionTypes.filter((member) => (rootMask(member) & mask) !== 0).length > 1 && hasChoices(type)
+      ) {
         return unsupportedIntersection(path)
       }
     }
@@ -756,6 +815,12 @@ function translateJsonSchemaMultiDocument(
   ): ImportedJsonSchemaRepresentation {
     const literals = combineLiteralUnions(left, right, path)
     if (literals !== undefined) return literals
+    if (
+      isTypePartition(right) &&
+      right.types.every((type) => isSimpleTypeConstraint(type as ImportedJsonSchemaRepresentation))
+    ) {
+      return combinePartition(right, left, path, false)
+    }
     if (isTypePartition(left)) return combinePartition(left, right, path, true)
     if (isTypePartition(right)) return combinePartition(right, left, path, false)
     return unsupportedIntersection(path)
@@ -770,8 +835,6 @@ function translateJsonSchemaMultiDocument(
     if (right._tag === "Never") return right
     if (left._tag === "Unknown") return combinedAnnotations(right, left, right)
     if (right._tag === "Unknown") return combinedAnnotations(left, left, right)
-    if (left._tag === "Reference") return combine(resolveReference(left, path), right, path)
-    if (right._tag === "Reference") return combine(left, resolveReference(right, path), path)
     if (left._tag === "Suspend") {
       return annotate(
         combine(left.thunk as ImportedJsonSchemaRepresentation, right, path),
@@ -784,6 +847,11 @@ function translateJsonSchemaMultiDocument(
         right.annotations
       )
     }
+    // Repeated references impose the same validation, even for recursive unions.
+    // Preserve the reference instead of expanding its choices into intersections.
+    if (left._tag === "Reference" && right._tag === "Reference" && left.$ref === right.$ref) return left
+    if (left._tag === "Reference") return combine(resolveReference(left, path), right, path)
+    if (right._tag === "Reference") return combine(left, resolveReference(right, path), path)
     if (left._tag === "Union" && right._tag === "Union") return combineUnions(left, right, path)
     if (left._tag === "Union") return combineUnionWithType(left, right, path, true)
     if (right._tag === "Union") return combineUnionWithType(right, left, path, false)
@@ -888,7 +956,7 @@ function translateJsonSchemaMultiDocument(
     }
   }
 
-  function recur(input: unknown, path: Path): ImportedJsonSchemaRepresentation {
+  function recur(input: unknown, path: Path, base: string): ImportedJsonSchemaRepresentation {
     if (input === false) {
       return never
     }
@@ -899,20 +967,23 @@ function translateJsonSchemaMultiDocument(
     if (schema === undefined) {
       return unknown
     }
+    base = referenceIndex.resourceBase(schema, base, path)
+    const declaredTypes = Array.isArray(schema.type) ? schema.type : [schema.type]
+    const excludesStructuredLiteral = (value: unknown) =>
+      declaredTypes.every(isImportedJsonSchemaType) &&
+      !declaredTypes.includes(Array.isArray(value) ? "array" : "object")
     const enumIndex = Array.isArray(schema.enum)
-      ? schema.enum.findIndex((value) => typeof value === "object" && value !== null)
+      ? schema.enum.findIndex((value) =>
+        typeof value === "object" && value !== null && !excludesStructuredLiteral(value)
+      )
       : -1
     if (enumIndex !== -1) {
       throw errorWithPath(`Unsupported structured JSON Schema value for "enum"`, [...path, "enum", enumIndex])
     }
     for (const keyword of Object.keys(schema)) {
-      if (keyword === "if" && !Object.hasOwn(schema, "then") && !Object.hasOwn(schema, "else")) continue
       switch (keyword) {
-        case "if":
         case "$dynamicRef":
         case "contains":
-        case "dependentRequired":
-        case "dependentSchemas":
         case "not":
         case "unevaluatedItems":
         case "unevaluatedProperties":
@@ -920,7 +991,7 @@ function translateJsonSchemaMultiDocument(
       }
     }
 
-    let representation = on(schema, path)
+    let representation = on(schema, path, base)
     if (Object.hasOwn(schema, "const")) {
       const literal = makeJsonLiteral(schema.const)
       if (literal === undefined && typeof schema.const === "object") {
@@ -929,7 +1000,9 @@ function translateJsonSchemaMultiDocument(
       if (literal !== undefined) representation = combine(representation, literal, [...path, "const"])
     }
     if (Array.isArray(schema.enum)) {
-      const types = schema.enum.map((value) => makeJsonLiteral(value) ?? unknown)
+      // Structured members excluded by the explicit type are impossible branches.
+      // Keep rejecting structured literals when they could actually be accepted.
+      const types = schema.enum.map((value) => makeJsonLiteral(value) ?? never)
       representation = combine(
         representation,
         types.length === 1
@@ -939,13 +1012,7 @@ function translateJsonSchemaMultiDocument(
       )
     }
     if (typeof schema.$ref === "string") {
-      const $ref = JsonSchema.getReferenceKey(schema.$ref)
-      if ($ref === undefined) {
-        throw errorWithPath(`Unsupported reference ${JSON.stringify(schema.$ref)}`, [...path, "$ref"])
-      }
-      if (!Object.hasOwn(document.definitions, $ref)) {
-        throw errorWithPath(`Invalid reference ${JSON.stringify(schema.$ref)}`, [...path, "$ref"])
-      }
+      const $ref = referenceIndex.reference(schema.$ref, base, [...path, "$ref"])
       if (!reachableDefinitions.has($ref)) reachableDefinitions.set($ref, path)
       const reference: SchemaRepresentation.Reference = { _tag: "Reference", $ref }
       representation = representation._tag === "Unknown"
@@ -970,7 +1037,7 @@ function translateJsonSchemaMultiDocument(
       for (let index = 0; index < schema.allOf.length; index++) {
         representation = combine(
           representation,
-          recur(schema.allOf[index], [...path, "allOf", index]),
+          recur(schema.allOf[index], [...path, "allOf", index], base),
           [...path, "allOf", index]
         )
       }
@@ -981,17 +1048,41 @@ function translateJsonSchemaMultiDocument(
       if (Array.isArray(members)) {
         const union: ImportedJsonSchemaRepresentation = {
           _tag: "Union",
-          types: members.map((member, index) => recur(member, [...path, mode, index])),
+          types: members.map((member, index) => recur(member, [...path, mode, index], base)),
           mode,
           checks: []
         }
         representation = combine(union, representation, [...path, mode])
       }
     }
+    const conditionalChecks: Array<Check> = []
+    if (Object.hasOwn(schema, "if") && (Object.hasOwn(schema, "then") || Object.hasOwn(schema, "else"))) {
+      conditionalChecks.push(jsonSchemaFilter("effect/schema/isConditional", null, [
+        recur(schema.if, [...path, "if"], base),
+        recur(schema.then, [...path, "then"], base),
+        recur(schema.else, [...path, "else"], base)
+      ]))
+    }
+    for (const keyword of ["dependentRequired", "dependentSchemas"] as const) {
+      const dependencies = schema[keyword]
+      if (typeof dependencies === "object" && dependencies !== null && !Array.isArray(dependencies)) {
+        for (const [name, dependency] of Object.entries(dependencies)) {
+          const dependencyPath = [...path, keyword, name]
+          conditionalChecks.push(jsonSchemaFilter("effect/schema/isConditional", null, [
+            recur({ type: "object", required: [name] }, dependencyPath, base),
+            recur(keyword === "dependentRequired" ? { required: dependency } : dependency, dependencyPath, base),
+            unknown
+          ]))
+        }
+      }
+    }
+    if (conditionalChecks.length > 0) {
+      representation = { _tag: "Union", types: [representation], mode: "anyOf", checks: conditionalChecks }
+    }
     return representation
   }
 
-  function on(schema: JsonSchema.JsonSchema, path: Path): ImportedJsonSchemaRepresentation {
+  function on(schema: JsonSchema.JsonSchema, path: Path, base: string): ImportedJsonSchemaRepresentation {
     const types = Array.isArray(schema.type) && schema.type.every(isImportedJsonSchemaType)
       ? schema.type
       : !isImportedJsonSchemaType(schema.type) && hasTypeSpecificKeywords(schema)
@@ -1000,7 +1091,7 @@ function translateJsonSchemaMultiDocument(
     if (types !== undefined) {
       return {
         _tag: "Union",
-        types: types.map((type) => on({ ...schema, type }, path)),
+        types: types.map((type) => on({ ...schema, type }, path, base)),
         mode: "anyOf",
         checks: []
       }
@@ -1031,7 +1122,7 @@ function translateJsonSchemaMultiDocument(
         const minItems = typeof schema.minItems === "number" ? schema.minItems : 0
         const elements = prefixItems?.map((element, index) => ({
           isOptional: index + 1 > minItems,
-          type: recur(element, [...path, "prefixItems", index])
+          type: recur(element, [...path, "prefixItems", index], base)
         })) ?? []
         const isTupleClosed = schema.items === false ||
           (schema.items === undefined &&
@@ -1045,13 +1136,13 @@ function translateJsonSchemaMultiDocument(
           elements,
           rest: isTupleClosed
             ? []
-            : [schema.items === undefined ? unknown : recur(schema.items, [...path, "items"])],
+            : [schema.items === undefined ? unknown : recur(schema.items, [...path, "items"], base)],
           checks: collectArrayChecks(schema, isMaxItemsRedundant)
         }
       }
       case "object": {
-        const scope = collectObjectScope(schema, path)
-        return lowerObject([scope], collectObjectChecks(schema, path), undefined, path)
+        const scope = collectObjectScope(schema, path, base)
+        return lowerObject([scope], collectObjectChecks(schema, path, base), undefined, path)
       }
       default:
         return unknown
@@ -1078,6 +1169,12 @@ function translateJsonSchemaMultiDocument(
 
   function collectStringChecks(schema: JsonSchema.JsonSchema, path: Path): Array<Check> {
     const checks: Array<Check> = []
+    if (options?.formats === "apply" && typeof schema.format === "string") {
+      if (!Object.hasOwn(formats, schema.format)) {
+        throw errorWithPath(`Unsupported JSON Schema format ${JSON.stringify(schema.format)}`, [...path, "format"])
+      }
+      checks.push(jsonSchemaFilter("effect/schema/isFormat", schema.format))
+    }
     addNumberCheck(checks, schema.minLength, "effect/schema/isMinLength", "minLength")
     addNumberCheck(checks, schema.maxLength, "effect/schema/isMaxLength", "maxLength")
     if (typeof schema.pattern === "string") {
@@ -1115,7 +1212,8 @@ function translateJsonSchemaMultiDocument(
 
   function collectObjectScope(
     schema: JsonSchema.JsonSchema,
-    path: Path
+    path: Path,
+    base: string
   ): ImportedObjectScope {
     const sourceProperties =
       typeof schema.properties === "object" && schema.properties !== null && !Array.isArray(schema.properties)
@@ -1128,7 +1226,7 @@ function translateJsonSchemaMultiDocument(
     const keys = new Set([...propertyNames, ...required])
     const properties = new Map(Array.from(keys, (name) => [name, {
       type: Object.hasOwn(sourceProperties, name)
-        ? recur(sourceProperties[name], [...path, "properties", name])
+        ? recur(sourceProperties[name], [...path, "properties", name], base)
         : undefined,
       isOptional: !required.includes(name)
     }]))
@@ -1148,21 +1246,22 @@ function translateJsonSchemaMultiDocument(
             _tag: "String",
             checks
           },
-          type: recur(value, [...path, "patternProperties", pattern])
+          type: recur(value, [...path, "patternProperties", pattern], base)
         })
       }
     }
     const additionalProperties = schema.additionalProperties === false
       ? never
       : typeof schema.additionalProperties === "object" && schema.additionalProperties !== null
-      ? recur(schema.additionalProperties, [...path, "additionalProperties"])
+      ? recur(schema.additionalProperties, [...path, "additionalProperties"], base)
       : unknown
     return { properties, hasProperties, patterns, additionalProperties }
   }
 
   function collectObjectChecks(
     schema: JsonSchema.JsonSchema,
-    path: Path
+    path: Path,
+    base: string
   ): Array<Check> {
     const checks: Array<Check> = []
     addNumberCheck(checks, schema.minProperties, "effect/schema/isMinProperties", "minProperties")
@@ -1172,7 +1271,7 @@ function translateJsonSchemaMultiDocument(
       checks.push(jsonSchemaFilter(
         "effect/schema/isPropertyNames",
         null,
-        [combine(string, recur(schema.propertyNames, propertyNamesPath), propertyNamesPath)]
+        [combine(string, recur(schema.propertyNames, propertyNamesPath, base), propertyNamesPath)]
       ))
     }
     return checks
@@ -1180,10 +1279,18 @@ function translateJsonSchemaMultiDocument(
 
   const references: Record<string, Representation> = {}
   const representations = document.schemas.map((schema, index) =>
-    unknownJsonSchemas(recur(schema, singleRoot ? ["schema"] : ["schemas", index]))
+    unknownJsonSchemas(recur(schema, singleRoot ? ["schema"] : ["schemas", index], referenceIndex.bases[index]))
   ) as [Representation, ...Array<Representation>]
   for (const [key, path] of reachableDefinitions) {
-    InternalRecord.assignProperty(references, key, unknownJsonSchemas(translateDefinition(key, path)))
+    const representation = translateDefinition(key, path)
+    if (
+      referenceIndex.targets.get(key)?.isRoot &&
+      (representation._tag === "Reference" ||
+        representation._tag === "Suspend" && representation.thunk._tag === "Reference")
+    ) {
+      resolveReference({ _tag: "Reference", $ref: key }, path)
+    }
+    InternalRecord.assignProperty(references, key, unknownJsonSchemas(representation))
   }
   for (const { reference, path } of annotatedReferences) {
     resolveReference(reference, path)

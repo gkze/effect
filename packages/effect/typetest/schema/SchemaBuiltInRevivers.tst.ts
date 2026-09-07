@@ -5,6 +5,9 @@ describe("Schema built-in revivers", () => {
   it("composes every built-in reviver without casts", () => {
     const revivers: ReadonlyArray<SchemaRepresentation.AnyReviver> = [
       SchemaRepresentation.isTrimmedReviver,
+      SchemaRepresentation.isAdditionalPropertiesReviver,
+      SchemaRepresentation.isConditionalReviver,
+      SchemaRepresentation.isFormatReviver,
       SchemaRepresentation.isPatternReviver,
       SchemaRepresentation.isStringFiniteReviver,
       SchemaRepresentation.isStringBigIntReviver,

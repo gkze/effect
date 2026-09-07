@@ -251,7 +251,8 @@ const OPEN_API_31_TARGET_COLLISIONS = ["example", "discriminator", "xml", "exter
  * Siblings of a valid Draft-07 `$ref` are ignored according to Draft-07
  * semantics. The conversion throws when a Draft-07 `$id` fragment cannot be
  * represented as a Draft-2020-12 `$anchor`, or when an unknown Draft-07
- * keyword would become an active Draft-2020-12 keyword after copying.
+ * keyword would become an active Draft-2020-12 keyword after copying. Boolean
+ * `deprecated` annotations are preserved because they do not affect validation.
  *
  * **Example** (Parsing a Draft-07 schema)
  *
@@ -1008,7 +1009,6 @@ const PRE_2020_TO_2020_COLLISIONS = [
   "unevaluatedItems",
   "unevaluatedProperties"
 ]
-const DRAFT_07_TO_2020_COLLISIONS = [...PRE_2020_TO_2020_COLLISIONS, "deprecated"]
 const OPEN_API_30_TO_2020_COLLISIONS = [
   ...PRE_2020_TO_2020_COLLISIONS,
   "$comment",
@@ -1039,7 +1039,10 @@ function convertDraft07(root: JsonSchema): JsonSchema {
       }
       return out
     }
-    rejectKeywordCollisions(source, DRAFT_07_TO_2020_COLLISIONS, "Draft 2020-12", "Draft-07")
+    rejectKeywordCollisions(source, PRE_2020_TO_2020_COLLISIONS, "Draft 2020-12", "Draft-07")
+    if (Object.hasOwn(source, "deprecated") && typeof source.deprecated !== "boolean") {
+      unsupported("deprecated", "Draft 2020-12", "the target annotation requires a boolean")
+    }
 
     let items: unknown = undefined
     let additionalItems: unknown = undefined

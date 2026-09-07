@@ -6704,7 +6704,10 @@ export const splitLines = <Err, Done>(): Channel<
  * @category decoding
  * @since 4.0.0
  */
-export const decodeText = <Err, Done>(encoding?: string, options?: TextDecoderOptions): Channel<
+export const decodeText = <Err, Done>(
+  encoding?: string,
+  options?: ConstructorParameters<typeof TextDecoder>[1]
+): Channel<
   Arr.NonEmptyReadonlyArray<string>,
   Err,
   Done,
