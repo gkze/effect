@@ -1,5 +1,5 @@
 /**
- * Provides selective just-in-time compilation for Schema decoders. Use
+ * Provides selective just-in-time compilation for Schema parsing and construction. Use
  * {@link enable} to enable JIT compilation for one exact AST, or import
  * `effect/unstable/schema/SchemaJITCompiler/enable` for its side effect to
  * enable compilation globally.
@@ -13,11 +13,11 @@ import type * as SchemaAST from "../../SchemaAST.ts"
 const compileScoped = CompilerRegistry.makeScopedCompiler(compile)
 
 /**
- * Enables JIT compilation for an exact AST and its decoding dependencies.
+ * Enables JIT compilation for an exact AST and its parsing and construction dependencies.
  *
  * **Details**
  *
- * The AST is installed immediately, while its `is`, `validate`, and `decode`
+ * The AST is installed immediately, while its `is`, `validate`, `decodeEffect`, and `makeEffect`
  * operations remain lazy. Existing compiled descendants are preserved and
  * lazy boundaries are compiled when first reached. If dynamic function
  * generation is unavailable or compilation fails, decoding continues through
@@ -27,6 +27,10 @@ const compileScoped = CompilerRegistry.makeScopedCompiler(compile)
  * Declaration type parameters are prepared on the declaration's first use,
  * with their operations still lazy. New ASTs created inside its callback
  * follow the normal registry policy.
+ * Use `SchemaAST.toType(schema.ast)` for construction, and install a distinct
+ * type-side AST separately from an encoded root. Decoding and construction
+ * initialize and recover from compilation failures independently. An interpreted
+ * constructor can still resolve selectively compiled children, including lazy ones.
  *
  * @category compilation
  * @since 4.0.0

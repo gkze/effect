@@ -16,13 +16,21 @@ import {
   type Is,
   type Parser,
   prepareDecode,
+  resolve as resolveEntry,
+  type ResolveEntry,
   type ResolveParser,
   resolveParser as resolve,
   set,
   type Validate
 } from "../../../internal/schema/compilerRegistry.ts"
+import * as Constructors from "../../../internal/schema/constructors.ts"
 import * as Diagnostics from "../../../internal/schema/diagnostics.ts"
-import { applyChecks } from "../../../internal/schema/interpreter.ts"
+import {
+  applyChecks,
+  compile as compileInterpreted,
+  compileConstructor,
+  makeConstructorParser
+} from "../../../internal/schema/interpreter.ts"
 import { hasDefaultObjectOptions, type ParsedProperty, resumeProperties } from "../../../internal/schema/objects.ts"
 import * as InternalParser from "../../../internal/schema/parser.ts"
 import { makeEncoding } from "../../../internal/schema/transformation.ts"
@@ -400,7 +408,7 @@ function compileDetailedUnion(ast: SchemaAST.Union): DetailedDecoder {
   }
 }
 
-const makeDetailed = (decode: DetailedDecoder): CompiledDecoder["decode"] => {
+const makeDetailed = (decode: DetailedDecoder): CompiledDecoder["decodeEffect"] => {
   return (input, options) => {
     try {
       const output = decode(input, options)
@@ -483,7 +491,10 @@ interface ComposedObjectContext {
 }
 
 /** @internal */
-const makeComposedObjectContext = (ast: SchemaAST.Objects, resolve: ResolveParser): ComposedObjectContext => ({
+const makeComposedObjectContext = (
+  ast: SchemaAST.Objects,
+  resolve: ResolveParser
+): ComposedObjectContext => ({
   ast,
   properties: ast.propertySignatures.map((property): ParsedProperty => {
     const out: ParsedProperty = {
@@ -502,6 +513,27 @@ const makeComposedObjectContext = (ast: SchemaAST.Objects, resolve: ResolveParse
 })
 
 /** @internal */
+const makeConstructionContext = (ast: SchemaAST.Objects, resolve: ResolveEntry): ComposedObjectContext => {
+  const properties = Constructors.properties(ast, resolve)
+  return { ast, properties, fallback: Constructors.objects(ast, resolve, properties) }
+}
+
+/** @internal */
+const makeClassConstructor = (ast: SchemaAST.AST, resolve: ResolveEntry): Parser =>
+  applyChecks(ast, makeConstructorParser(SchemaAST.getConstructorDescriptor(ast)!, (ast) => resolve(ast).makeEffect))
+
+/** @internal */
+const makeLeafConstructor = (ast: SchemaAST.AST): Parser => makeDetailed(compileDetailed(ast))
+
+/** @internal */
+const interpretedDecoder = (ast: SchemaAST.AST, resolve: ResolveEntry): CompiledDecoder =>
+  fromDecode(() => compileInterpreted(ast, (ast) => resolve(ast).parseEffect))
+
+/** @internal */
+const withConstructor = (decoder: CompiledDecoder, make: () => Parser): CompiledDecoder =>
+  Object.defineProperty(decoder, "makeEffect", { get: make })
+
+/** @internal */
 const makeTypeDecoder = (
   ast: SchemaAST.AST,
   makeValidate: () => Validate | undefined,
@@ -514,14 +546,14 @@ const makeTypeDecoder = (
   get validate() {
     return makeValidate()
   },
-  get decode() {
+  get decodeEffect() {
     return makeDetailed(compileDetailed(ast))
   }
 })
 
 /** @internal */
-const fromDecode = (makeDecode: () => CompiledDecoder["decode"]): CompiledDecoder => ({
-  get decode() {
+const fromDecode = (makeDecode: () => CompiledDecoder["decodeEffect"]): CompiledDecoder => ({
+  get decodeEffect() {
     return makeDecode()
   }
 })
@@ -550,6 +582,17 @@ const makeEncodingDecoder = (
 
 /** @internal */
 export const runtime = {
+  getConstructorDescriptor: SchemaAST.getConstructorDescriptor,
+  resolveEntry,
+  makeConstructionContext,
+  makeClassConstructor,
+  makeLeafConstructor,
+  makeObjectConstructor: Constructors.objects,
+  makeArrayConstructor: Constructors.arrays,
+  makeUnionConstructor: Constructors.union,
+  interpretedDecoder,
+  withConstructor,
+  compileConstructor,
   effectIsExit,
   hasDefaultObjectOptions,
   invalid,

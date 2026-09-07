@@ -1,4 +1,5 @@
 import { Effect, Option, Schema, SchemaGetter, SchemaTransformation } from "effect"
+import { constructionSchemas } from "./construction.ts"
 
 export const key = Symbol("key")
 export const token = Symbol("token")
@@ -174,6 +175,7 @@ export const lazy = Schema.suspend(() => {
 export const proof = Schema.Struct({ value: Schema.String })
 
 export const schemas: Readonly<Record<string, Schema.ConstraintDecoder<unknown>>> = {
+  ...constructionSchemas,
   ...Object.fromEntries(Object.entries(synchronous).map(([name, fixture]) => [name, fixture.schema])),
   asynchronous: asyncFixture.schema,
   lazy,

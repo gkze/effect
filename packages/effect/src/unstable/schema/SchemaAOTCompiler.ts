@@ -32,7 +32,7 @@ const localParser = (ast: SchemaAST.AST): string => {
   return `${helper("makeLocalParser")}(ast,${helper("resolve")})`
 }
 
-const decoder = (ast: SchemaAST.AST): string | undefined => {
+const decodeSource = (ast: SchemaAST.AST): string | undefined => {
   const selection = Codegen.select(ast)
   switch (selection._tag) {
     case "Fallback":
@@ -50,9 +50,44 @@ const decoder = (ast: SchemaAST.AST): string | undefined => {
   }
 }
 
+const decoder = (ast: SchemaAST.AST): string | undefined => {
+  const decode = decodeSource(ast)
+  const selection = Codegen.selectConstructor(ast)
+  let make: string
+  switch (selection) {
+    case "Class":
+      make = `${helper("makeClassConstructor")}(ast,${helper("resolveEntry")})`
+      break
+    case "Leaf":
+      make = `${helper("makeLeafConstructor")}(ast)`
+      break
+    case "Objects":
+    case "Arrays":
+    case "Union": {
+      const name = selection === "Objects"
+        ? "makeObjectConstructor"
+        : selection === "Arrays"
+        ? "makeArrayConstructor"
+        : "makeUnionConstructor"
+      make = `${helper("applyChecks")}(ast,${helper(name)}(ast,${helper("resolveEntry")}))`
+      break
+    }
+    case "Object":
+      make = `${helper("applyChecks")}(ast,(function(context,R){${
+        Codegen.emitComposedObject(ast as SchemaAST.Objects)
+      }})(${helper("makeConstructionContext")}(ast,${helper("resolveEntry")}),R))`
+      break
+    default:
+      return decode
+  }
+  return `${helper("withConstructor")}(${
+    decode ?? `${helper("interpretedDecoder")}(ast,${helper("resolveEntry")})`
+  },()=>${make})`
+}
+
 /**
  * Generates a JavaScript ES module exporting `install(asts): void` for an
- * ordered array of ASTs and their statically reachable decoding dependencies.
+ * ordered array of ASTs and their statically reachable parsing and construction dependencies.
  *
  * **When to use**
  *
@@ -72,6 +107,11 @@ const decoder = (ast: SchemaAST.AST): string | undefined => {
  * Repeated ASTs and shared dependencies are installed once by identity. Fast
  * paths can still inline dependency code into multiple parent decoders.
  * An empty array generates a module whose installation does nothing.
+ * Construction uses independently lazy `makeEffect` operations. Struct loops
+ * are emitted as static functions; Array, Record, Union, leaf, and Class
+ * constructors are specialized lazily in the shared runtime. Constructor defaults
+ * and Class source schemas are read from the supplied ASTs, not serialized or
+ * executed during generation. Construction never runs a validation-and-replay pass.
  *
  * **Gotchas**
  *
@@ -85,6 +125,9 @@ const decoder = (ast: SchemaAST.AST): string | undefined => {
  * older entries keep them. Type-side and flipped ASTs are separate registry
  * keys; generate and install them separately when needed. Importing the
  * generated module alone does not install anything.
+ * In particular, include `SchemaAST.toType(schema.ast)` to prepare construction
+ * when it differs from the encoded root. Unsupported constructors use the
+ * interpreter while statically installed children remain available.
  *
  * @category compilation
  * @since 4.0.0
@@ -130,6 +173,13 @@ export const compile = (asts: ReadonlyArray<SchemaAST.AST>): string => {
         break
     }
     node.encoding?.forEach((link, index) => visit(link.to, `${name}.encoding[${index}].to`))
+    if (node.context?.constructorDefault !== undefined) {
+      visit(node.context.constructorDefault.to, `${name}.context.constructorDefault.to`)
+    }
+    const descriptor = SchemaAST.getConstructorDescriptor(node)
+    if (descriptor !== undefined) {
+      visit(descriptor.link.to, `${helper("getConstructorDescriptor")}(${name}).link.to`)
+    }
 
     const source = decoder(node)
     if (source !== undefined) {

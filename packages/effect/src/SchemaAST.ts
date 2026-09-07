@@ -12,15 +12,14 @@
  */
 
 import * as Arr from "./Array.ts"
-import type * as Cause from "./Cause.ts"
 import * as Effect from "./Effect.ts"
 import * as Exit from "./Exit.ts"
 import { format, formatPropertyKey } from "./Formatter.ts"
 import { identity, memoize, memoizeIdempotent } from "./Function.ts"
-import { effectIsExit, iterateEager } from "./internal/effect.ts"
+import { effectIsExit } from "./internal/effect.ts"
 import * as InternalRecord from "./internal/record.ts"
 import * as InternalAnnotations from "./internal/schema/annotations.ts"
-import * as InternalSchemaCause from "./internal/schema/cause.ts"
+import { makeArrayParser } from "./internal/schema/arrays.ts"
 import { wrapPropertyKeyIssue } from "./internal/schema/cause.ts"
 import * as Diagnostics from "./internal/schema/diagnostics.ts"
 import {
@@ -32,6 +31,7 @@ import {
   stepProperty
 } from "./internal/schema/objects.ts"
 import * as InternalParser from "./internal/schema/parser.ts"
+import { makeUnionParser } from "./internal/schema/unions.ts"
 import * as Pipeable from "./Pipeable.ts"
 import * as Predicate from "./Predicate.ts"
 import * as Result from "./Result.ts"
@@ -2270,72 +2270,7 @@ export const Arrays: new(
     compile: SchemaParser.Compiler,
     compileConstructorDefault: SchemaParser.Compiler = compile
   ): SchemaParser.Parser {
-    // oxlint-disable-next-line @typescript-eslint/no-this-alias
-    const ast = this
-    type ElementParser = { readonly ast: AST; readonly parser: SchemaParser.Parser }
-    let elements: Array<ElementParser> | undefined
-    let rest: Array<ElementParser> | undefined
-    const elementLen = ast.elements.length
-    const tailLen = Math.max(0, ast.rest.length - 1)
-
-    function getParser(
-      tailThreshold: number,
-      index: number
-    ): { readonly ast: AST; readonly parser: SchemaParser.Parser } {
-      return Diagnostics.getTupleElement(elements!, rest!, tailThreshold, index)
-    }
-
-    return Effect.fnUntracedEager(function*(input, options) {
-      if (input === InternalParser.missing) {
-        return InternalParser.missing
-      }
-
-      // If the input is not an array, return early with an error
-      if (!Array.isArray(input)) {
-        return yield* Effect.fail(new SchemaIssue.InvalidType(ast, input, options))
-      }
-      if (!elements) {
-        elements = ast.elements.map((ast) => ({ ast, parser: compileConstructorDefault(ast) }))
-        rest = ast.rest.map((ast) => ({ ast, parser: compileConstructorDefault(ast) }))
-      }
-
-      const len = input.length
-      const state = {
-        ast,
-        getParser,
-        input,
-        len,
-        tailThreshold: Math.max(elementLen, len - tailLen),
-        output: new globalThis.Array(len),
-        issues: undefined as Arr.NonEmptyArray<SchemaIssue.Issue> | undefined,
-        options
-      }
-      const eff = parseArray(state, input, 0, ast.rest.length === 0 ? elementLen : Math.max(len, elementLen + tailLen))
-      if (eff) yield* eff
-
-      // ---------------------------------------------
-      // handle excess indexes
-      // ---------------------------------------------
-      if (ast.rest.length === 0 && len > elementLen) {
-        for (let i = elementLen; i <= len - 1; i++) {
-          const issue = Diagnostics.unexpectedKey(ast, i, input[i], options)
-          if (options.errors === "all") {
-            if (state.issues) state.issues.push(issue)
-            else state.issues = [issue]
-          } else {
-            return yield* Effect.fail(
-              new SchemaIssue.Composite(ast, [issue], input, options)
-            )
-          }
-        }
-      }
-      if (state.issues) {
-        return yield* Effect.fail(
-          new SchemaIssue.Composite(ast, state.issues, input, options)
-        )
-      }
-      return state.output
-    })
+    return makeArrayParser(this, compileConstructorDefault)
   }
   private _rebuild(recur: (ast: AST) => AST, checks: Checks | undefined, encodingChecks: Checks | undefined) {
     const elements = mapOrSame(this.elements, recur)
@@ -2367,45 +2302,6 @@ export const Arrays: new(
     return "array"
   }
 }
-const parseArray = iterateEager<{
-  readonly ast: AST
-  readonly input: unknown
-  readonly len: number
-  readonly getParser: (
-    tailThreshold: number,
-    index: number
-  ) => { readonly ast: AST; readonly parser: SchemaParser.Parser }
-  readonly tailThreshold: number
-  readonly options: ParseOptions
-  readonly output: Array<unknown>
-  issues: Array<SchemaIssue.Issue> | undefined
-}, unknown>()({
-  onItem(s, item, i) {
-    const value = i < s.len ? item : InternalParser.missing
-    return s.getParser(s.tailThreshold, i).parser(value, s.options)
-  },
-  step(s, _item, exit, i) {
-    if (exit._tag === "Failure") {
-      return wrapPropertyKeyIssue(s, s.ast, i, exit)
-    }
-    const value = (exit as InternalParser.Success<unknown, SchemaIssue.Issue>)[InternalParser.args]
-    if (value !== InternalParser.missing) {
-      s.output[i] = value
-    } else {
-      const p = s.getParser(s.tailThreshold, i)
-      if (isOptional(p.ast)) return
-      const issue = Diagnostics.missingKey(i, p.ast)
-      if (s.options.errors === "all") {
-        if (s.issues) s.issues.push(issue)
-        else s.issues = [issue]
-      } else {
-        return Exit.fail(
-          new SchemaIssue.Composite(s.ast, [issue], s.input, s.options)
-        )
-      }
-    }
-  }
-})
 
 /**
  * floating point or integer, with optional exponent
@@ -3431,52 +3327,7 @@ export const Union: new<A extends AST = AST>(
     compile: SchemaParser.Compiler,
     compileConstructorDefault?: SchemaParser.Compiler
   ): SchemaParser.Parser {
-    // oxlint-disable-next-line @typescript-eslint/no-this-alias
-    const ast = this
-
-    const parse: SchemaParser.Parser = (input, options) => {
-      if (input === InternalParser.missing) {
-        return InternalParser.missingExit
-      }
-      const candidates = getCandidates(input, ast.types, compileConstructorDefault !== undefined)
-
-      if (candidates.length === 0) {
-        return Effect.fail(new SchemaIssue.AnyOf(ast, [], input, options))
-      }
-      if (candidates.length === 1) {
-        const result = compile(candidates[0])(input, options)
-        if ((result as Exit.Exit<unknown, SchemaIssue.Issue>)._tag === "Success") return result
-        return effectIsExit(result)
-          ? failSingleUnionCandidate(ast, (result as Exit.Failure<unknown, SchemaIssue.Issue>).cause, input, options)
-          : Effect.catchCause(result, (cause) => failSingleUnionCandidate(ast, cause, input, options))
-      }
-
-      const state = {
-        ast,
-        compile,
-        input,
-        out: undefined,
-        successes: ast.options?.mode === "oneOf" ? [] : undefined,
-        issues: undefined as Arr.NonEmptyArray<SchemaIssue.Issue> | undefined,
-        options
-      }
-      const eff = parseUnion(state, candidates)
-      if (!eff) {
-        if (state.out) return state.out
-        return Effect.fail(new SchemaIssue.AnyOf(ast, state.issues ?? [], input, options))
-      }
-      return Effect.flatMapEager(eff, (_) => {
-        if (state.out) return state.out
-        return Effect.fail(new SchemaIssue.AnyOf(ast, state.issues ?? [], input, options))
-      })
-    }
-    return (input, options) => {
-      try {
-        return parse(input, options)
-      } catch (error) {
-        return Effect.die(error)
-      }
-    }
+    return makeUnionParser(this, compile, compileConstructorDefault !== undefined)
   }
   private _rebuild(
     recur: (ast: AST) => AST,
@@ -3542,53 +3393,6 @@ export const Union: new<A extends AST = AST>(
     return Array.from(new Set(types)).join(" | ")
   }
 }
-
-function failSingleUnionCandidate(
-  ast: Union,
-  cause: Cause.Cause<SchemaIssue.Issue>,
-  input: unknown,
-  options: ParseOptions
-) {
-  const issue = InternalSchemaCause.getSchemaIssue(cause)
-  if (!issue) return Exit.failCause(cause)
-  return Exit.fail(new SchemaIssue.AnyOf(ast, [issue], input, options))
-}
-
-const parseUnion = iterateEager<{
-  readonly compile: (ast: AST) => SchemaParser.Parser
-  readonly ast: Union
-  readonly input: unknown
-  readonly options: ParseOptions
-  out: Exit.Success<unknown, SchemaIssue.Issue> | undefined
-  readonly successes: Array<AST> | undefined
-  issues: Array<SchemaIssue.Issue> | undefined
-}, AST>()({
-  onItem(s, ast) {
-    const parser = s.compile(ast)
-    return parser(s.input, s.options)
-  },
-  step(s, candidate, exit) {
-    if (exit._tag === "Failure") {
-      const issue = InternalSchemaCause.getSchemaIssue(exit.cause)
-      if (issue === undefined) {
-        return exit
-      }
-      if (s.issues) s.issues.push(issue)
-      else s.issues = [issue]
-    } else {
-      if (s.out && s.successes) {
-        s.successes.push(candidate)
-        return Exit.fail(new SchemaIssue.OneOf(s.ast, s.successes, s.input, s.options))
-      }
-      s.out = exit
-      if (s.successes) {
-        s.successes.push(candidate)
-      } else {
-        return Exit.void
-      }
-    }
-  }
-})
 
 const nonFiniteLiterals = new Union([
   new Literal("Infinity"),

@@ -7,10 +7,13 @@ describe("SchemaCompiler", () => {
     const decoder = {
       is: (input, _options) => typeof input === "string",
       validate: (input, _options) => typeof input === "string" ? input : SchemaCompiler.invalid,
-      decode: (input, _options) => Effect.succeed(input)
+      decodeEffect: (input, _options) => Effect.succeed(input),
+      makeEffect: (input, _options) => Effect.succeed(input)
     } satisfies SchemaCompiler.CompiledDecoder
 
     expect(SchemaCompiler.set(Schema.String.ast, decoder)).type.toBe<void>()
+    expect(SchemaCompiler.set).type.toBeCallableWith(Schema.String.ast, { decodeEffect: Effect.succeed })
+    expect(SchemaCompiler.set).type.not.toBeCallableWith(Schema.String.ast, { makeEffect: Effect.succeed })
   })
 
   it("enable", () => {

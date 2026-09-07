@@ -16,7 +16,7 @@ describe("SchemaCompiler", () => {
         options.reportInput === true
           ? { value: "compiled" }
           : SchemaCompiler.invalid,
-      decode: () => {
+      decodeEffect: () => {
         decodes++
         return Effect.succeed({ value: "detailed" })
       }
@@ -43,7 +43,7 @@ describe("SchemaCompiler", () => {
         validations++
         return input
       },
-      decode: Effect.succeed
+      decodeEffect: Effect.succeed
     })
 
     strictEqual(SchemaParser.is(schema)({ value: "accepted" }), true)
@@ -66,7 +66,7 @@ describe("SchemaCompiler", () => {
 
         SchemaCompiler.set(schema.ast, {
           validate: () => ({ value: "replacement" }),
-          decode: () => Effect.succeed({ value: "replacement" })
+          decodeEffect: () => Effect.succeed({ value: "replacement" })
         })
 
         deepStrictEqual(decode(input), input)
@@ -84,7 +84,7 @@ describe("SchemaCompiler", () => {
         reads++
         return undefined
       },
-      get decode() {
+      get decodeEffect() {
         reads++
         return Effect.succeed
       }
@@ -106,7 +106,7 @@ describe("SchemaCompiler", () => {
     let sawMissing = false
     SchemaCompiler.set(value, {
       validate: (input) => typeof input === "string" ? input : SchemaCompiler.invalid,
-      decode: (input) => {
+      decodeEffect: (input) => {
         sawMissing = input === SchemaCompiler.missing
         return Effect.succeed(input)
       }
@@ -120,7 +120,7 @@ describe("SchemaCompiler", () => {
     const schema = Schema.FiniteFromString
     SchemaCompiler.set(SchemaAST.flip(schema.ast), {
       validate: () => "aot",
-      decode: () => Effect.succeed("detailed")
+      decodeEffect: () => Effect.succeed("detailed")
     })
 
     strictEqual(SchemaParser.encodeUnknownSync(schema)(1), "aot")
@@ -255,7 +255,7 @@ describe("SchemaJITCompiler", () => {
         reads++
         return undefined
       },
-      get decode() {
+      get decodeEffect() {
         reads++
         return Effect.succeed
       }
@@ -274,7 +274,7 @@ describe("SchemaJITCompiler", () => {
     const schema = Schema.Struct({ value: Schema.String })
     SchemaCompiler.set(schema.ast, {
       validate: () => ({ value: "installed" }),
-      decode: () => Effect.succeed({ value: "installed" })
+      decodeEffect: () => Effect.succeed({ value: "installed" })
     })
     const Function = globalThis.Function
     try {

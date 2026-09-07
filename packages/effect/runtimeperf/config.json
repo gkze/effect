@@ -12,6 +12,51 @@
   },
   "suites": [
     {
+      "name": "construction",
+      "fixtures": [
+        {
+          "file": "suites/construction/fixtures/effect.ts",
+          "defaults": {
+            "tier": 1,
+            "implementation": "effect",
+            "family": "construction",
+            "astTags": ["Objects", "Arrays", "Union", "Declaration"],
+            "path": "valid",
+            "operation": "make-sync",
+            "size": 1
+          },
+          "cases": [
+            { "name": "struct", "export": "struct", "scenario": "construction-struct" },
+            { "name": "defaults", "export": "defaults", "scenario": "construction-defaults" },
+            { "name": "array", "export": "array", "size": 32, "scenario": "construction-array" },
+            { "name": "union", "export": "union", "scenario": "construction-union" },
+            { "name": "class", "export": "classValue", "scenario": "construction-class" },
+            { "name": "cold", "export": "cold", "path": "cold", "scenario": "construction-cold" }
+          ]
+        },
+        {
+          "file": "suites/construction/fixtures/effect-compiled.ts",
+          "defaults": {
+            "tier": 1,
+            "implementation": "effect-compiled",
+            "family": "construction",
+            "astTags": ["Objects", "Arrays", "Union", "Declaration"],
+            "path": "valid",
+            "operation": "make-sync",
+            "size": 1
+          },
+          "cases": [
+            { "name": "struct-compiled", "export": "struct", "scenario": "construction-struct" },
+            { "name": "defaults-compiled", "export": "defaults", "scenario": "construction-defaults" },
+            { "name": "array-compiled", "export": "array", "size": 32, "scenario": "construction-array" },
+            { "name": "union-compiled", "export": "union", "scenario": "construction-union" },
+            { "name": "class-compiled", "export": "classValue", "scenario": "construction-class" },
+            { "name": "cold-compiled", "export": "cold", "path": "cold", "scenario": "construction-cold" }
+          ]
+        }
+      ]
+    },
+    {
       "name": "arbitrary",
       "fixtures": [
         {

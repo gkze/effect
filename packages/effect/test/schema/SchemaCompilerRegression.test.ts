@@ -122,7 +122,7 @@ describe("compiler regression contracts", () => {
       for (const [schema, input, expected] of cases) {
         for (const compiled of [false, true]) {
           if (compiled) SchemaJITCompiler.enable(schema.ast)
-          const parser = CompilerRegistry.resolve(schema.ast).parser
+          const parser = CompilerRegistry.resolve(schema.ast).parseEffect
           const effect = parser(input, SchemaAST.defaultParseOptions)
           strictEqual(Effect.isEffect(effect), true)
           const output = yield* Effect.map(effect, (value) => value)
@@ -205,7 +205,7 @@ describe("compiler regression contracts", () => {
         }
       })
     }
-    SchemaCompiler.set(schema.ast, { is, validate, decode: Effect.succeed })
+    SchemaCompiler.set(schema.ast, { is, validate, decodeEffect: Effect.succeed })
     const input = { value: "a" }
     strictEqual(SchemaParser.is(schema)(input), true)
     strictEqual(SchemaParser.decodeUnknownSync(schema)(input), input)
@@ -361,7 +361,7 @@ describe("compiler regression contracts", () => {
         reads.push("validate")
         return (input: unknown) => input
       },
-      get decode() {
+      get decodeEffect() {
         strictEqual(this, decoder)
         reads.push("decode")
         return Effect.succeed
@@ -387,7 +387,7 @@ describe("compiler regression contracts", () => {
         return undefined
       },
       validate: (input) => input,
-      decode: Effect.succeed
+      decodeEffect: Effect.succeed
     })
     strictEqual(SchemaParser.is(schema)({ value: "a" }), true)
     strictEqual(SchemaParser.is(schema)({ value: "b" }), true)
@@ -403,7 +403,7 @@ describe("compiler regression contracts", () => {
         reads.push("validate")
         return () => SchemaCompiler.invalid
       },
-      get decode() {
+      get decodeEffect() {
         strictEqual(this, decoder)
         reads.push("decode")
         return Effect.succeed

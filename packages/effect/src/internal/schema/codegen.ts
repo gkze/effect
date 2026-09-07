@@ -576,6 +576,30 @@ export const select = (ast: SchemaAST.AST, local = false): Selection => {
 }
 
 /** @internal */
+export const selectConstructor = (
+  ast: SchemaAST.AST
+): "Object" | "Objects" | "Arrays" | "Union" | "Class" | "Leaf" | undefined => {
+  if (ast.encoding !== undefined) return undefined
+  if (SchemaAST.getConstructorDescriptor(ast) !== undefined) return "Class"
+  switch (ast._tag) {
+    case "Objects":
+      return ast.propertySignatures.length > 0 && ast.propertySignatures.length <= maxGeneratedNodes &&
+          ast.indexSignatures.length === 0 ?
+        "Object" :
+        "Objects"
+    case "Declaration":
+    case "Suspend":
+      return undefined
+    case "Arrays":
+      return "Arrays"
+    case "Union":
+      return "Union"
+    default:
+      return "Leaf"
+  }
+}
+
+/** @internal */
 export interface Binding {
   readonly value: unknown
   readonly reference: string

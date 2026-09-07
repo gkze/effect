@@ -7,7 +7,8 @@ import type { Parser, ResolveParser } from "./compilerRegistry.ts"
 import * as InternalParser from "./parser.ts"
 import { applyTransformation, makeEncoding } from "./transformation.ts"
 
-function makeConstructorParser(descriptor: SchemaAST.ConstructorDescriptor, resolve: ResolveParser): Parser {
+/** @internal */
+export function makeConstructorParser(descriptor: SchemaAST.ConstructorDescriptor, resolve: ResolveParser): Parser {
   let sourceParser: Parser
   return (input, options) => {
     if (input === InternalParser.missing) return InternalParser.missingExit
@@ -21,19 +22,29 @@ function makeConstructorParser(descriptor: SchemaAST.ConstructorDescriptor, reso
 }
 
 /** @internal */
+export function withConstructorDefault(ast: SchemaAST.AST, parser: Parser, resolve: ResolveParser): Parser {
+  const link = ast.context?.constructorDefault
+  if (link === undefined) return parser
+  let source: Parser | undefined
+  return makeEncoding(ast, [link], [(input, options) => (source ??= resolve(link.to))(input, options)], parser)
+}
+
+/** @internal */
+export function compileConstructor(ast: SchemaAST.AST, resolve: ResolveParser): Parser {
+  return compile(ast, resolve, (ast) => withConstructorDefault(ast, resolve(ast), resolve))
+}
+
+/** @internal */
 export function compile(
   ast: SchemaAST.AST,
   resolve: ResolveParser,
-  resolveConstructorDefault?: ResolveParser,
-  constructorDefault?: SchemaAST.Link
+  resolveConstructorDefault?: ResolveParser
 ): Parser {
   const descriptor = resolveConstructorDefault ? SchemaAST.getConstructorDescriptor(ast) : undefined
   const parser = descriptor
     ? makeConstructorParser(descriptor, resolve)
     : ast.getParser(resolve, resolveConstructorDefault)
-  const links: SchemaAST.Encoding | undefined = constructorDefault
-    ? ast.encoding ? [...ast.encoding, constructorDefault] : [constructorDefault]
-    : ast.encoding
+  const links = ast.encoding
   const parseLocal = applyChecks(ast, parser)
   if (!links) return parseLocal
   let encodingParser: Parser | undefined

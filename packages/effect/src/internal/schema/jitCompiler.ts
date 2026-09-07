@@ -3,8 +3,10 @@ import { runtime as Runtime } from "../../unstable/schema/SchemaCompiler/runtime
 import * as Codegen from "./codegen.ts"
 import {
   type CompiledDecoder,
+  constructorResolver,
   type Parser,
   prepareDecode,
+  type ResolveEntry,
   type ResolveParser,
   type Validate
 } from "./compilerRegistry.ts"
@@ -48,8 +50,8 @@ const withCompilationFallback = (
     get validate() {
       return getOperation("validate")
     },
-    get decode() {
-      return getOperation("decode")
+    get decodeEffect() {
+      return getOperation("decodeEffect")
     }
   }
 }
@@ -88,7 +90,7 @@ const makeLocalParser = (ast: SchemaAST.AST, resolve: ResolveParser): Parser => 
 }
 
 /** @internal */
-export const compile = (ast: SchemaAST.AST, resolve: ResolveParser): CompiledDecoder | undefined => {
+const compileDecoder = (ast: SchemaAST.AST, resolve: ResolveParser): CompiledDecoder | undefined => {
   try {
     const selection = Codegen.select(ast)
     if (selection._tag === "Fallback" || !supportsDynamicFunction()) return undefined
@@ -115,4 +117,41 @@ export const compile = (ast: SchemaAST.AST, resolve: ResolveParser): CompiledDec
     // The registry caches the interpreter when compilation fails before installation.
     return undefined
   }
+}
+
+/** @internal */
+export const compile = (ast: SchemaAST.AST, resolve: ResolveEntry): CompiledDecoder | undefined => {
+  const decoder = compileDecoder(ast, (ast) => resolve(ast).parseEffect)
+  let selection: ReturnType<typeof Codegen.selectConstructor>
+  try {
+    selection = Codegen.selectConstructor(ast)
+    if (selection === undefined || !supportsDynamicFunction()) return decoder
+  } catch {
+    return decoder
+  }
+  return Runtime.withConstructor(decoder ?? Runtime.interpretedDecoder(ast, resolve), () => {
+    try {
+      switch (selection) {
+        case "Class":
+          return Runtime.makeClassConstructor(ast, resolve)
+        case "Leaf":
+          return Runtime.makeLeafConstructor(ast)
+        case "Objects":
+          return Runtime.applyChecks(ast, Runtime.makeObjectConstructor(ast as SchemaAST.Objects, resolve))
+        case "Arrays":
+          return Runtime.applyChecks(ast, Runtime.makeArrayConstructor(ast as SchemaAST.Arrays, resolve))
+        case "Union":
+          return Runtime.applyChecks(ast, Runtime.makeUnionConstructor(ast as SchemaAST.Union, resolve))
+        case "Object": {
+          const object = ast as SchemaAST.Objects
+          const context = Runtime.makeConstructionContext(object, resolve)
+          const factory = globalThis.Function("context", "R", Codegen.emitComposedObject(object))
+          return Runtime.applyChecks(ast, factory(context, Runtime))
+        }
+      }
+    } catch {
+      // Preparing this operation has not executed any constructor or default.
+    }
+    return Runtime.compileConstructor(ast, constructorResolver(resolve))
+  })
 }

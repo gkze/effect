@@ -13,11 +13,9 @@
 import * as Cause from "./Cause.ts"
 import * as Effect from "./Effect.ts"
 import * as Exit from "./Exit.ts"
-import { memoize } from "./Function.ts"
 import { effectIsExit } from "./internal/effect.ts"
 import * as InternalSchemaCause from "./internal/schema/cause.ts"
 import * as CompilerRegistry from "./internal/schema/compilerRegistry.ts"
-import * as Interpreter from "./internal/schema/interpreter.ts"
 import * as InternalParser from "./internal/schema/parser.ts"
 import * as Option from "./Option.ts"
 import * as Result from "./Result.ts"
@@ -38,6 +36,10 @@ import * as SchemaIssue from "./SchemaIssue.ts"
  * The returned function accepts constructor input, applies constructor defaults,
  * runs type-side validation unless checks are disabled, and fails with a
  * `SchemaIssue.Issue` when construction fails.
+ * Makers use the shared compiler registry at `SchemaAST.toType(schema.ast)`.
+ * Construction initializes independently from decoding and never uses a
+ * validation-and-replay pass. Install JIT or AOT before the maker's first use
+ * to accelerate it; previously resolved makers retain their existing entry.
  *
  * @category constructors
  * @since 4.0.0
@@ -166,7 +168,7 @@ export function _is<T>(ast: SchemaAST.AST) {
   return <I>(input: I): input is I & T => {
     if (!initialized) {
       const entry = CompilerRegistry.resolve(typeAST)
-      parser = entry.parser
+      parser = entry.parseEffect
       compiledGuard = CompilerRegistry.prepareIs(entry, options)
       initialized = true
     }
@@ -1051,7 +1053,7 @@ function makeSync<T>(
       }
       if (output !== CompilerRegistry.invalid) return output as T
     }
-    return runParserSync<T>(entry.decode, input, parseOptions)
+    return runParserSync<T>(entry.decodeEffect, input, parseOptions)
   }
 }
 
@@ -1082,13 +1084,4 @@ export type Compiler = CompilerRegistry.ResolveParser
 
 const normalCompiler: Compiler = CompilerRegistry.resolveParser
 
-const constructorCompiler: Compiler = memoize((ast) =>
-  Interpreter.compile(ast, constructorCompiler, compileConstructorDefault)
-)
-const compileDefaulted = memoize((ast: SchemaAST.AST) =>
-  Interpreter.compile(ast, constructorCompiler, compileConstructorDefault, ast.context?.constructorDefault)
-)
-
-function compileConstructorDefault(ast: SchemaAST.AST): Parser {
-  return ast.context?.constructorDefault ? compileDefaulted(ast) : constructorCompiler(ast)
-}
+const constructorCompiler: Compiler = CompilerRegistry.resolveConstructor

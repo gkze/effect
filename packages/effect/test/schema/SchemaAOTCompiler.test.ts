@@ -8,7 +8,7 @@ import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { roots, schemas, suspendEvaluations } from "./fixtures/aot.ts"
 
-describe("SchemaAOTCompiler", () => {
+describe("SchemaAOTCompiler", { concurrent: false }, () => {
   it("emits deterministic modules without installing a decoder", () => {
     let checks = 0
     const schema = Schema.Struct({
@@ -61,5 +61,5 @@ describe("SchemaAOTCompiler", () => {
     } finally {
       rmSync(directory, { recursive: true, force: true })
     }
-  })
+  }, 20_000)
 })

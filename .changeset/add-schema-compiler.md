@@ -2,7 +2,7 @@
 "effect": patch
 ---
 
-Add experimental JIT and AOT compilation through the existing `SchemaParser` APIs:
+Add experimental JIT and AOT compilation through the existing `SchemaParser` parsing and construction APIs:
 
 - Import `effect/unstable/schema/SchemaJITCompiler/enable` for global lazy JIT.
 - Use `SchemaJITCompiler.enable(ast)` for one AST and its dependencies.
@@ -10,6 +10,8 @@ Add experimental JIT and AOT compilation through the existing `SchemaParser` API
 - Use `SchemaAOTCompiler.compile(asts)` at build time to generate a module exporting `install(asts)`. Supply runtime ASTs in the same order; regenerate after schema or Effect upgrades.
 
 Install before parsers' first execution to accelerate them. JIT falls back to the interpreter when dynamic code generation is unavailable or compilation fails; parsing errors keep their normal behavior. AOT runs without dynamic code generation.
+
+Construction shares the same cache, initializes independently from decoding, and does not replay defaults or constructors. Installed bundles require `decodeEffect`; optional `makeEffect` supplies construction, otherwise the interpreter handles it. Target `SchemaAST.toType(schema.ast)` for selective JIT or AOT construction. Global JIT must also precede the first maker call to optimize its entry.
 
 ### Breaking changes
 

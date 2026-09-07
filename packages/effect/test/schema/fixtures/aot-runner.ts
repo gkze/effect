@@ -4,6 +4,13 @@ import assert from "node:assert/strict"
 import { join } from "node:path"
 import { pathToFileURL } from "node:url"
 import { asyncFixture, events, lazy, proof, roots, schemas, suspendEvaluations, synchronous } from "./aot.ts"
+import {
+  Constructed,
+  constructionCases,
+  constructionEvents,
+  constructionOptions,
+  constructionSchemas
+} from "./construction.ts"
 
 const CompilerRegistry: typeof CompilerRegistryModule = await import(
   new URL("../../../src/internal/schema/compilerRegistry.ts", import.meta.url).href
@@ -54,6 +61,21 @@ const snapshotAsync = async () => {
 assert.throws(() => new Function("return true"), EvalError)
 const interpreted = snapshot()
 const interpretedAsync = await snapshotAsync()
+const snapshotConstruction = async () => {
+  const out = []
+  for (const fixture of Object.values(constructionCases)) {
+    const make = SchemaParser.makeEffect(fixture.schema)
+    for (const parseOptions of constructionOptions) {
+      for (const input of fixture.inputs) {
+        constructionEvents.length = 0
+        const result = await Effect.runPromise(Effect.result(make(input as never, { parseOptions })))
+        out.push({ result, events: [...constructionEvents] })
+      }
+    }
+  }
+  return out
+}
+const interpretedConstruction = await snapshotConstruction()
 assert.equal(suspendEvaluations, 0)
 
 Object.defineProperty(proof.ast, "getParser", {
@@ -101,6 +123,22 @@ for (
 
 assert.deepEqual(snapshot(), interpreted)
 assert.deepEqual(await snapshotAsync(), interpretedAsync)
+for (const [name, schema] of Object.entries(constructionSchemas)) {
+  if (name === "construct-declaration") continue
+  assert.equal(CompilerRegistry.resolve(schema.ast).origin, "installed", name)
+  Object.defineProperty(schema.ast, "getParser", {
+    configurable: true,
+    value() {
+      throw new Error(`Interpreted construction: ${name}`)
+    }
+  })
+}
+assert.deepEqual(await snapshotConstruction(), interpretedConstruction)
+const instance = Constructed.make({})
+constructionEvents.length = 0
+assert.equal(Constructed.make(instance), instance)
+assert.equal(await Effect.runPromise(Constructed.makeEffect(instance)), instance)
+assert.deepEqual(constructionEvents, [])
 
 const transform = SchemaParser.decodeUnknownResult(schemas.transformed)
 events.length = 0
@@ -115,6 +153,7 @@ assert.deepEqual(SchemaParser.decodeUnknownResult(schemas.middleware)("-1"), Res
 assert.deepEqual(events, ["transform", "middleware", "recover"])
 
 assert.deepEqual(SchemaParser.decodeUnknownSync(proof)({ value: "a", extra: true }), { value: "a" })
+assert.deepEqual(SchemaParser.make(proof)({ value: "constructed" }), { value: "constructed" })
 assert.ok(Result.isFailure(SchemaParser.decodeUnknownResult(proof)({ value: 1 })))
 assert.equal(SchemaParser.is(proof)({ value: "a" }), true)
 assert.equal(SchemaParser.is(proof)({ value: 1 }), false)

@@ -51,11 +51,12 @@ Values are median microseconds per operation and lower is better. Results vary
 between machines; cross-library comparisons are diagnostic. A dash means that
 the upstream adapter does not provide that benchmark.
 
-Measured on 2026-09-06 at `035d2b3a68`, with Node 24.12.0, V8
-13.6.233.17-node.37, Apple M3, macOS arm64, Valibot 1.4.2, and Zod 4.5.4.
-Each case uses five fresh processes, 300 ms measurement, 100 ms warmup, and
-automatically calibrated batches. Effect's compiler is disabled. Zod parsing
-uses `jitless: true`; Standard Schema and codec cases use their native APIs.
+Measured on 2026-09-07 with the current construction-registry implementation,
+using Node 24.12.0, V8 13.6.233.17-node.37, Apple M3, macOS arm64,
+Valibot 1.4.2, and Zod 4.5.4. Each case uses five fresh processes,
+300 ms measurement, 100 ms warmup, and automatically calibrated batches.
+Effect's compiler is disabled. Zod parsing uses `jitless: true`;
+Standard Schema and codec cases use their native APIs.
 
 ```sh
 pnpm runtimeperf schema-benchmarks --rounds 5 --time 300 --warmup-time 100
@@ -63,27 +64,27 @@ pnpm runtimeperf schema-benchmarks --rounds 5 --time 300 --warmup-time 100
 
 | Scenario                              | Effect interpreted | Valibot |  Zod 4 |
 | ------------------------------------- | -----------------: | ------: | -----: |
-| Create a schema                       |              76.15 |   29.93 |  95.74 |
-| Create a schema and parser            |              81.80 |       — |      — |
-| Validate valid data                   |               4.91 |    5.20 |      — |
-| Validate invalid data                 |             0.2478 |  0.2345 |      — |
-| Parse valid data and collect errors   |               5.54 |    5.07 |   7.08 |
-| Parse invalid data and collect errors |               8.13 |   15.43 |  22.67 |
-| Parse valid data and stop early       |               4.80 |    5.07 |      — |
-| Parse invalid data and stop early     |             0.2493 |  0.2422 |      — |
-| Standard Schema, valid data           |               6.07 |    5.30 |   3.64 |
-| Standard Schema, invalid data         |              12.64 |   15.51 |  17.52 |
-| Standard Schema, valid, stop early    |               5.42 |       — |      — |
-| Standard Schema, invalid, stop early  |             0.7917 |       — |      — |
-| Encode with a typed codec             |             0.1008 |       — | 0.0432 |
-| Decode with a typed codec             |             0.0975 |       — | 0.0488 |
-| Encode unknown input                  |             0.0998 |       — |      — |
-| Decode unknown input                  |             0.0976 |       — |      — |
+| Create a schema                       |              74.98 |   33.12 |  94.45 |
+| Create a schema and parser            |              75.55 |       — |      — |
+| Validate valid data                   |               4.76 |    5.17 |      — |
+| Validate invalid data                 |             0.2603 |  0.2402 |      — |
+| Parse valid data and collect errors   |               5.44 |    5.26 |   7.08 |
+| Parse invalid data and collect errors |               7.98 |   15.42 |  22.81 |
+| Parse valid data and stop early       |               4.88 |    5.10 |      — |
+| Parse invalid data and stop early     |             0.2714 |  0.2443 |      — |
+| Standard Schema, valid data           |               5.94 |    5.12 |   3.54 |
+| Standard Schema, invalid data         |              12.42 |   15.61 |  17.52 |
+| Standard Schema, valid, stop early    |               5.23 |       — |      — |
+| Standard Schema, invalid, stop early  |             0.7911 |       — |      — |
+| Encode with a typed codec             |             0.0974 |       — | 0.0425 |
+| Decode with a typed codec             |             0.0951 |       — | 0.0476 |
+| Encode unknown input                  |             0.0981 |       — |      — |
+| Decode unknown input                  |             0.0956 |       — |      — |
 
 ### Runtime compilation
 
 Schema offers experimental, opt-in JIT and AOT compilation. Both work through
-the normal `SchemaParser` APIs for decoding, encoding, and type guards; schemas
+the normal `SchemaParser` APIs for decoding, encoding, type guards, and construction; schemas
 remain composable and do not acquire a separate compiled type.
 
 To enable JIT globally, import its side-effect entrypoint during startup:
@@ -112,20 +113,27 @@ normal behavior; they do not trigger a restart in the interpreter.
 #### One cache, interchangeable parsers
 
 `SchemaCompiler` uses one `WeakMap<AST, Entry>` for interpreted, JIT, AOT, and
-manually installed decoders. Each entry wraps a `CompiledDecoder` object, not
-just a decoding function. The interpreter supplies only `decode`; compiled
-decoders can also supply `validate` and `is`, as described below. The cache
-never stores parsing results.
+manually installed decoders. Installed decoders are `CompiledDecoder` objects,
+not just decoding functions. Each entry provides lazy `decodeEffect` and `makeEffect`
+operations, either installed or interpreted. Decoders can also supply `validate`
+and `is`, as described below. The cache never stores parsing results.
 
-The registry adds a `parser` function to coordinate `validate` and `decode`,
-and an `origin` flag, either `"interpreted"` or `"installed"`. This flag controls
+The registry adds a `parseEffect` function to coordinate `validate` and `decodeEffect`,
+and lazily prepares interpreted construction when the installed bundle omits `makeEffect`.
+Both constructor and decoder functions are cached on that same entry. It also adds
+an `origin` flag, either `"interpreted"` or `"installed"`. This flag controls
 replacement during installation, not validation: selective JIT preserves already
 installed descendants but can replace interpreted ones. Callers of `set` supply
 only the decoder operations, not these internal fields.
 
 On first use, a parser reuses the cached entry or creates and caches a compiled
 or interpreted decoder. Children use the same cache, so an interpreted parent
-can have compiled children.
+can have compiled children. The internal child resolver returns entries; decoding
+selects `parseEffect`, construction selects `makeEffect`. Selective compilation
+remains active for children even when their parent uses an interpreted constructor.
+All operations are lazy, so recursive children resolve after their parent entry
+has been installed. No separate constructor cache or recursive placeholder cache
+is needed.
 
 On first use of a Declaration, its declared type parameters are prepared through
 the same resolver before its callback runs. Their operations remain lazy. This
@@ -134,38 +142,43 @@ created inside a callback follow the normal registry policy.
 
 Choose how to populate it:
 
-| API                                | Behavior                                                                                                                                             |
-| ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Import `SchemaJITCompiler/enable`  | Enables lazy JIT globally without replacing existing entries.                                                                                        |
-| `SchemaJITCompiler.enable(ast)`    | Installs one root immediately and compiles its decoding dependencies as needed. Operations remain lazy; already installed descendants are preserved. |
-| `SchemaCompiler.set(ast, decoder)` | Installs a trusted decoder, replacing any entry for that AST. AOT uses the same registry.                                                            |
+| API                                | Behavior                                                                                                                                                         |
+| ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Import `SchemaJITCompiler/enable`  | Enables lazy JIT globally without replacing existing entries.                                                                                                    |
+| `SchemaJITCompiler.enable(ast)`    | Installs one root immediately and compiles its parsing/construction dependencies as needed. Operations remain lazy; already installed descendants are preserved. |
+| `SchemaCompiler.set(ast, decoder)` | Installs a trusted decoder, replacing any entry for that AST. AOT uses the same registry.                                                                        |
 
 These modules live under `effect/unstable/schema`. Selective installation takes
 an AST: use `schema.ast` for decoding, `SchemaAST.flip(schema.ast)` for encoding,
-and `SchemaAST.toType(schema.ast)` for type guards. The exact returned AST is
+and `SchemaAST.toType(schema.ast)` for type guards and construction. The exact returned AST is
 the cache key. Different AST objects have separate entries, even if structurally
 equal; operations using the same AST object share an entry.
 
 Install before the **first execution** of parsers you want to accelerate.
 Creating a parser earlier is fine. Late installation is safe, but a parser that
 already captured an entry keeps it, even when later calls change parse options.
+This includes `make`, `makeOption`, and `makeEffect`: constructing a value can
+populate the entry before its first decode. A later global JIT import does not
+upgrade it. Explicit `set` still replaces the whole entry for new consumers;
+omitting `makeEffect` from a replacement restores interpreted construction for them.
 
 #### Parsing behavior and constraints
 
-Every entry provides the complete `decode` operation. Two optional fast paths
+Every entry provides the complete `decodeEffect` operation. Two optional fast paths
 avoid work that is unnecessary for successful decoding or boolean validation.
-All three operations initialize independently when first needed:
+All operations initialize independently when first needed:
 
-| Operation            | Result                                    | Purpose                                                                                 |
-| -------------------- | ----------------------------------------- | --------------------------------------------------------------------------------------- |
-| `is`, optional       | `boolean`                                 | Validates without constructing output, when checks do not require reconstructed values. |
-| `validate`, optional | Decoded value or `SchemaCompiler.invalid` | Validates and constructs output without generating diagnostic issues.                   |
-| `decode`, required   | `Effect<value, SchemaIssue, R>`           | Returns the actual output or detailed failure.                                          |
+| Operation                | Result                                    | Purpose                                                                                 |
+| ------------------------ | ----------------------------------------- | --------------------------------------------------------------------------------------- |
+| `is`, optional           | `boolean`                                 | Validates without constructing output, when checks do not require reconstructed values. |
+| `validate`, optional     | Decoded value or `SchemaCompiler.invalid` | Validates and constructs output without generating diagnostic issues.                   |
+| `decodeEffect`, required | `Effect<value, SchemaIssue, R>`           | Returns the actual output or detailed failure.                                          |
+| `makeEffect`, optional   | `Effect<value, SchemaIssue, R>`           | Constructs the node without replay; omission selects interpreted construction.          |
 
-`decode` is required so every entry can produce output and explain failures,
+`decodeEffect` is required so every entry can produce output and explain failures,
 even without any fast paths. It also handles transformations, middleware, and
 asynchronous work when the AST requires them. It can be compiled or interpreted;
-calling `decode` does not necessarily mean returning to the interpreter.
+calling `decodeEffect` does not necessarily mean returning to the interpreter.
 
 `validate` is optional because a synchronous, diagnostic-free first pass is not
 always supported or safe to repeat. In particular, ASTs containing encodings
@@ -173,21 +186,36 @@ omit it so a later failure cannot repeat transformations or middleware.
 
 `is` is optional because preserving validation semantics can require constructing
 output. For example, a check on a Struct must see the reconstructed object with
-extra properties removed. Such a schema uses `validate`, or `decode` if
+extra properties removed. Such a schema uses `validate`, or `decodeEffect` if
 `validate` is unavailable, instead of an output-free `is`. Omitting either fast
 path removes an optimization, not parsing capability.
 
-For decoding, `entry.parser` tries `validate` when available. Success already
+For decoding, `entry.parseEffect` tries `validate` when available. Success already
 contains the output, so no detailed pass is needed. `invalid` contains no error
-location or explanation, so failure requires one detailed `decode` pass. This
+location or explanation, so failure requires one detailed `decodeEffect` pass. This
 favors valid inputs at the cost of traversing invalid inputs again, only where
 repetition is safe. Without `validate`, or for the `missing` sentinel, it calls
-`decode` directly. Interpreter, JIT, and AOT implementations supply the operations
+`decodeEffect` directly. Interpreter, JIT, and AOT implementations supply the operations
 without implementing this dispatch. The synchronous decode and encode adapters
 share a direct version of it, returning successful `validate` output without an
 intermediate Effect. Encoding uses the flipped AST; when it equals the original,
 both adapters use the same entry and execution path. Detailed traversal does not
 restart fast validation at every child.
+
+Construction calls `entry.makeEffect` directly, without `is` or `validate`.
+It has different semantics from decoding: defaults are applied to Struct fields,
+tuple/array elements, and Record values before the child is constructed. They do
+not become defaults for that AST used as a root, a Union member, or a Record key.
+Union selection stays conservative for missing discriminants. Class construction
+preserves recognized instances; otherwise it constructs the source and creates
+the instance. Ordinary Declaration callbacks retain their own parsing choices.
+
+Using only construction does not initialize the decoder or validators. JIT
+preparation failures select the interpreted implementation for the affected
+operation, independently of decoding or construction that already works. If a
+lazy child's compilation fails after a default has run, only that child falls
+back. Neither default effects nor Class constructors are replayed. Normal Union
+branch attempts remain unchanged, so more than one branch's defaults can run.
 
 A composed Struct decoder can compile its fields, including transformations,
 then apply the Struct's checks to the decoded output. Both stages read the same
@@ -210,7 +238,7 @@ The following constraints apply:
   have no observable side effects; property getters must be deterministic and
   safe to repeat. Declaration parsers have the same constraint and must be
   synchronous.
-- ASTs with encodings enter `decode` directly. Transformations and middleware
+- ASTs with encodings enter `decodeEffect` directly. Transformations and middleware
   run once, with their validation checkpoints resolved through the shared cache.
   Local checkpoints preserve the original AST for checks and issues.
 - Unsupported nodes and code-size limits select composed or interpreted parsing;
@@ -219,14 +247,17 @@ The following constraints apply:
 
 For custom `set` implementations, every operation must honor the active
 `ParseOptions`. Return `invalid` only for invalid input, never to decline an
-optimization; `validate` must not call `decode` and discard its issues.
+optimization; `validate` must not call `decodeEffect` and discard its issues.
 User checks may themselves allocate issues. An absent optional input reaches
-`decode` as `SchemaCompiler.missing`.
+`decodeEffect` or `makeEffect` as `SchemaCompiler.missing`, distinct from a present
+`undefined`. When a field produces no value, propagate `missing` as an Effect
+success: the parent omits optional fields or reports a missing required key.
+Public root adapters reject a final `missing` rather than exposing it.
 
 Installation trusts the decoder to implement its AST and does not mutate the
 supplied object. Operation accessors are evaluated once, on demand, with that
 object as their receiver; missing optional operations are cached too. Installed
-`decode` functions return ordinary Effects.
+`decodeEffect` and `makeEffect` functions return ordinary Effects.
 
 #### Ahead-of-time compilation
 
@@ -267,8 +298,11 @@ dependencies are emitted and installed once by identity.
 JIT and AOT share generation rules and runtime support. Generated modules import
 `effect/unstable/schema/SchemaCompiler/runtime`, not the code generator, and
 work without dynamic function construction. Validators and composed Struct
-decoders are static; detailed diagnostics and transformation orchestration still
-initialize lazily. AOT does not precompute every operation.
+decoders and constructors are static. Detailed diagnostics, transformation
+orchestration, and Array, Record, Union, leaf, and Class constructors specialize
+lazily in shared runtime support. AOT does not precompute every operation.
+Constructor default links and Class source schemas are included among reachable
+dependencies and read from the runtime ASTs without executing defaults during generation.
 
 Keep these installation requirements in mind:
 
@@ -279,101 +313,155 @@ Keep these installation requirements in mind:
   not serialization, preserving their identity.
 - Suspend thunks are not forced during generation. Their contents and other
   unsupported nodes use the interpreter, with no late JIT required.
-- Include type-side and flipped ASTs separately when needed. As with `set`,
+- Include type-side ASTs for construction and flipped ASTs for encoding separately
+  when they differ from the supplied roots. As with `set`,
   late installation does not update parser closures that captured older entries.
 
 #### Performance snapshot
 
-Measured on 2026-09-06 at `69f1bd97a0`: Node 24.12.0, V8
-13.6.233.17-node.37, Apple M3, macOS arm64. Runtime measurements use public
-`SchemaParser` APIs. Keep scenario names, units, and measurement settings stable
-when updating these tables. Lower values are better.
+##### Construction
 
-##### Moltar
+Measured on 2026-09-07, Node 24.12.0, V8 13.6, Apple M3, macOS arm64.
+Median ns/op through `SchemaParser.make`; nine isolated rounds, 500 ms measurement
+and 150 ms warmup. Interpreted/JIT use calibrated batches; AOT uses batch 256
+with dynamic code generation disabled and a separate fixture call site.
+Schema setup is outside measurement except in the last row, which also includes
+installation for AOT.
 
-Median ns/op from nine processes per case, 500 ms measurement, 150 ms warmup,
-batch 256. AOT uses the same worker and data with dynamic code generation disabled.
-Its fixture has a different call-site shape; sub-10 ns differences between JIT
-and AOT are not a general ranking.
+| Case                                 | Interpreted |    JIT |    AOT |
+| ------------------------------------ | ----------: | -----: | -----: |
+| Struct, two fields                   |        83.6 |   43.0 |   39.1 |
+| Struct, constructor default          |       106.2 |   67.9 |   64.8 |
+| Array of 32 Structs                  |      1092.7 | 1026.7 | 1010.1 |
+| Union, missing discriminant default  |       126.9 |   97.2 |   96.4 |
+| Class, plain input                   |       165.2 |  162.3 |  160.4 |
+| Schema creation + first construction |      2798.3 | 6340.5 | 4177.3 |
 
-| Case                          | Interpreted |    JIT |    AOT |
-| ----------------------------- | ----------: | -----: | -----: |
-| `parseSafe`, valid            |       353.9 |    5.8 |    5.7 |
-| `parseSafe`, extra property   |       344.0 |    5.9 |    5.7 |
-| `parseSafe`, invalid          |      3177.2 | 3039.3 | 3049.4 |
-| `assertLoose`, valid          |       364.1 |    3.6 |    3.3 |
-| `assertLoose`, extra property |       350.6 |    3.6 |    3.3 |
-| `assertLoose`, invalid        |       123.5 |    3.1 |    1.7 |
+Retained parser heap, KiB/schema, for
+`Struct({ a: String, b: Number.withConstructorDefault(succeed(1)) })`.
+Five isolated processes per cell retain 1,000 distinct schemas and their public
+parsers after first use with `{ a: "a", b: 1 }`. Imports, static AOT modules,
+64 warmup schemas, and schema construction precede the parser heap reading.
+Two forced GCs run at each reading. Costs include public parser closures and AOT
+installation, but exclude schema construction, about 3 KiB/schema.
+These are retained V8 heap values, not peak or all native executable-code memory.
 
-Schema construction plus first use, median µs/op. AOT was not measured in this
-fixture.
+| Operations used | Interpreted |  JIT |   AOT |
+| --------------- | ----------: | ---: | ----: |
+| make            |        2.71 | 5.12 |  8.54 |
+| decode          |        1.91 | 2.28 |  5.01 |
+| make + decode   |        4.32 | 5.48 | 10.40 |
 
-| Case          | Interpreted |   JIT |
-| ------------- | ----------: | ----: |
-| `parseSafe`   |        6.46 | 10.12 |
-| `assertLoose` |        7.22 | 10.65 |
+##### Decoding and type guards
 
-##### Other schema shapes
+Measured on 2026-09-07 on the same source revision as the construction snapshot.
+All measurements use public `SchemaParser` APIs on Node 24.12.0, V8 13.6,
+Apple M3, macOS arm64. The current snapshot includes every scenario in the
+`schema-compiler` suite, not just the Moltar objects.
 
-The `schema-compiler` suite, median ns/op from five processes per case,
+###### Moltar
+
+Median ns/op, batch 256. Interpreted/JIT: five processes per case, 300 ms
+measurement and 100 ms warmup. AOT: nine processes, 500 ms measurement and
+150 ms warmup, with dynamic code generation disabled. AOT uses the same data and
+worker with a different fixture call site. Sub-10 ns differences between JIT and
+AOT are not a general ranking.
+
+| Case                        | Interpreted |    JIT |    AOT |
+| --------------------------- | ----------: | -----: | -----: |
+| parseSafe, valid            |       346.1 |    5.8 |    5.9 |
+| parseSafe, extra property   |       344.7 |    5.9 |    5.9 |
+| parseSafe, invalid          |      2949.1 | 2823.8 | 3080.0 |
+| assertLoose, valid          |       346.4 |    3.6 |    3.6 |
+| assertLoose, extra property |       346.0 |    3.6 |    3.6 |
+| assertLoose, invalid        |       135.2 |    3.0 |    1.7 |
+
+Schema creation plus first use, median µs/op, five processes per case. AOT was
+not measured in this fixture. Creation and first use are measured together.
+
+| Case        | Interpreted |   JIT |
+| ----------- | ----------: | ----: |
+| parseSafe   |        7.90 | 11.12 |
+| assertLoose |        8.07 | 11.17 |
+
+###### Other schema shapes
+
+All 31 scenarios in `schema-compiler`, median ns/op from five processes per case,
 300 ms measurement, 100 ms warmup, and shared calibrated batches.
 
-| Scenario                         | Interpreted |       JIT |
-| -------------------------------- | ----------: | --------: |
-| `strict-record-1024-valid`       |    228285.0 |  217743.9 |
-| `strict-record-4096-valid`       |    759221.3 |  755089.7 |
-| `strict-record-4096-invalid`     |    756843.9 | 1478428.8 |
-| `array-100-valid`                |      1489.6 |     127.8 |
-| `array-100-invalid-last`         |      6636.5 |    4530.0 |
-| `tuple-rest-valid`               |       646.5 |      40.1 |
-| `optional-struct-valid`          |      1280.6 |      19.1 |
-| `record-valid`                   |      4851.0 |     673.3 |
-| `template-record-valid`          |     10820.5 |    4108.9 |
-| `struct-with-record-valid`       |      1751.6 |     740.7 |
-| `number-record-valid`            |      5752.8 |    5081.8 |
-| `transformed-key-record-valid`   |      4466.8 |    4527.9 |
-| `encoding-checked-struct-valid`  |       980.0 |      31.5 |
-| `literal-100-valid-last`         |        34.4 |      10.0 |
-| `literal-100-invalid`            |      3240.8 |    3383.3 |
-| `tagged-union-100-valid-last`    |       132.5 |      27.3 |
-| `tagged-union-100-invalid`       |      3230.2 |    3665.6 |
-| `checked-string-valid`           |        20.0 |       8.8 |
-| `template-literal-valid`         |       178.2 |      48.6 |
-| `transformation-struct-valid`    |      2532.8 |    1569.2 |
-| `transformation-root-valid`      |        44.4 |      43.8 |
-| `transformation-root-invalid`    |      4076.2 |    3611.7 |
-| `transformation-uppercase-valid` |        52.8 |      52.8 |
-| `transformation-output-invalid`  |      3559.4 |    3587.0 |
-| `middleware-struct-valid`        |      2555.8 |     392.9 |
-| `recursive-node-valid`           |     15465.7 |   10567.8 |
+| Scenario                             | Interpreted |       JIT |
+| ------------------------------------ | ----------: | --------: |
+| `declaration-set-valid`              |      3468.2 |    1436.3 |
+| `checked-transformed-struct-valid`   |      2188.1 |    1412.0 |
+| `checked-transformed-struct-invalid` |      6500.4 |    5613.4 |
+| `sync-decode-valid`                  |       109.0 |       6.7 |
+| `sync-encode-valid`                  |       109.3 |       6.7 |
+| `strict-record-1024-valid`           |    226738.9 |  203431.1 |
+| `strict-record-4096-valid`           |    739006.2 |  758462.5 |
+| `strict-record-4096-invalid`         |    745461.3 | 1449419.9 |
+| `array-100-valid`                    |      1477.8 |     127.3 |
+| `array-100-invalid-last`             |      6729.2 |    4447.5 |
+| `tuple-rest-valid`                   |       626.0 |      39.9 |
+| `optional-struct-valid`              |      1278.3 |      19.5 |
+| `record-valid`                       |      4802.2 |     669.6 |
+| `template-record-valid`              |     10632.1 |    4054.5 |
+| `struct-with-record-valid`           |      1753.4 |     741.0 |
+| `number-record-valid`                |      5731.8 |    5067.0 |
+| `transformed-key-record-valid`       |      4433.2 |    4530.8 |
+| `encoding-checked-struct-valid`      |       976.3 |      31.1 |
+| `literal-100-valid-last`             |        33.2 |      10.0 |
+| `literal-100-invalid`                |      3235.0 |    3412.0 |
+| `tagged-union-100-valid-last`        |       132.5 |      27.2 |
+| `tagged-union-100-invalid`           |      3262.1 |    3381.5 |
+| `checked-string-valid`               |        19.9 |       8.8 |
+| `template-literal-valid`             |       176.7 |      48.3 |
+| `transformation-struct-valid`        |      2534.7 |    1498.0 |
+| `transformation-root-valid`          |        41.4 |      41.9 |
+| `transformation-root-invalid`        |      3334.0 |    3625.8 |
+| `transformation-uppercase-valid`     |        52.6 |      52.5 |
+| `transformation-output-invalid`      |      3319.9 |    3637.2 |
+| `middleware-struct-valid`            |      2464.3 |     384.8 |
+| `recursive-node-valid`               |     14906.1 |   10527.1 |
 
-##### Memory and first-use CPU
+###### Memory and first-use CPU
 
-Seven processes per mode, each retaining 1,000 distinct four-field Structs,
-their inputs, and public sync decoders. Two forced GCs at each snapshot:
-before construction, after construction, and after first use.
+Seven isolated processes per mode, each retaining 1,000 distinct schemas for
+`Struct({ name: String, count: Number, active: Boolean, tags: Array(String) })`,
+their inputs, and public `decodeUnknownSync` functions. The inputs contain
+`{ name: "a", count: 1, active: true, tags: ["a", "b"] }`.
+Two forced GCs run before construction, after construction, and after first use.
 
-Retained heap, B/schema. Total includes construction and first-use allocations;
-module imports, the static AOT module, RSS, and build-time compilation are excluded.
+Retained heap, B/schema. Construction includes schemas, inputs and public parser
+closures. First use includes AOT installation and lazy parser initialization.
+Imports and the static AOT module precede the first reading and are excluded.
+These are retained V8 heap values, not peak memory, RSS, or all native code memory.
 
 | Mode        | Construction | First use | Total |
 | ----------- | -----------: | --------: | ----: |
-| Interpreted |         1895 |      1685 |  3580 |
-| JIT         |         1902 |      1314 |  3216 |
-| AOT         |         1895 |      3583 |  5478 |
+| Interpreted |         3217 |      3059 |  6276 |
+| JIT         |         3217 |      2341 |  5558 |
+| AOT         |         3212 |      5985 |  9197 |
 
-First use within the batch, median µs/schema. Includes AOT installation and lazy
-operation initialization; excludes schema construction and GC. Process CPU can
-exceed wall time. Warm CPU was not measured separately.
+First use, median µs/schema within the 1,000-schema batch, including AOT
+installation. Schema construction, imports and GC are outside the timed region.
+Process CPU includes background work and can exceed wall time. Warm CPU is not
+measured separately.
 
 | Mode        | Wall time | Process CPU |
 | ----------- | --------: | ----------: |
-| Interpreted |      2.22 |        4.55 |
-| JIT         |      6.64 |       10.51 |
-| AOT         |     28.35 |       28.94 |
+| Interpreted |      4.03 |        9.43 |
+| JIT         |      8.14 |       14.58 |
+| AOT         |     49.44 |       52.02 |
 
-Raw reports and probe sources are retained locally in
-`tmp/compiler-cleanup-69f1bd97a0/` and `tmp/runtimeperf/results/`.
+Coverage of the accompanying revision comparison: all 191 Effect cases in the
+runtimeperf registry, including the 54 interpreter diagnostics and 31 Arbitrary
+cases not tabulated here. AOT throughput coverage includes the six Moltar paths and six construction cases.
+Peak memory and native executable-code memory are not covered. Current measurements are shown here without deltas;
+revision-comparison reports retain their paired observations and confidence intervals.
+
+Raw reports are under `tmp/runtimeperf/results/`; the audit summary, complete
+comparison matrix and supplementary probe source are documented in
+`.tmp/schema-construction-optimization.md`.
 
 # Defining Elementary Schemas
 
