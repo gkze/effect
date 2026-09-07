@@ -83,7 +83,8 @@ const copy = ((): FileSystem.FileSystem["copy"] => {
     nodeCp(fromPath, toPath, {
       force: options?.overwrite ?? false,
       preserveTimestamps: options?.preserveTimestamps ?? false,
-      recursive: true
+      recursive: true,
+      verbatimSymlinks: true
     })
 })()
 

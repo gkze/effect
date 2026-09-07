@@ -48,6 +48,27 @@ const startWatch = <E, R>(
 describe("FileSystem", { concurrent: false }, () => {
   testLayer(NodeFileSystem.layer)
 
+  it.effect("copy preserves relative symlinks within a resolved source directory", () =>
+    Effect.gen(function*() {
+      const fs = yield* FileSystem.FileSystem
+      const root = yield* fs.makeTempDirectoryScoped()
+      const source = `${root}/source`
+      const destination = `${root}/destination`
+      yield* fs.makeDirectory(source)
+      yield* fs.writeFileString(`${source}/owned.txt`, "original")
+      yield* fs.symlink("owned.txt", `${source}/alias`)
+      yield* fs.symlink(source, `${root}/install`)
+
+      yield* fs.copy(yield* fs.realPath(`${root}/install`), destination)
+
+      assert.strictEqual(yield* fs.readLink(`${destination}/alias`), "owned.txt")
+      yield* fs.writeFileString(`${destination}/alias`, "changed")
+      assert.strictEqual(yield* fs.readFileString(`${destination}/owned.txt`), "changed")
+      assert.strictEqual(yield* fs.readFileString(`${source}/owned.txt`), "original")
+    }).pipe(
+      Effect.provide(NodeFileSystem.layer)
+    ))
+
   it.effect("writeAll accepts an empty buffer", () =>
     Effect.gen(function*() {
       const fs = yield* FileSystem.FileSystem
