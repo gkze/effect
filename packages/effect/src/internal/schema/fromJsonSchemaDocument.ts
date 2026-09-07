@@ -718,7 +718,10 @@ function translateJsonSchemaMultiDocument(
         type: member as ImportedJsonSchemaRepresentation
       }))
       .filter((member) => (rootMask(member.type) & mask) !== 0)
-    if (members.length > 1 && hasChoices(type)) {
+    // Distributing a common object constraint over anyOf preserves nested
+    // choices inside each branch; it does not form or flatten a Cartesian product.
+    const distributesObject = union.mode === "anyOf" && type._tag === "Objects"
+    if (members.length > 1 && !distributesObject && hasChoices(type)) {
       return unsupportedIntersection(path)
     }
     if (members.length === 1 && union.checks.length === 0) {

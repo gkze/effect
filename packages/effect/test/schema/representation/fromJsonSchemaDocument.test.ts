@@ -2933,31 +2933,6 @@ describe("fromJsonSchemaDocument", () => {
       )
     })
 
-    it("rejects distributions that duplicate a nested choice", () => {
-      throws(
-        () =>
-          toSchemaFromJsonSchemaDocument(
-            JsonSchema.fromSchemaDraft2020_12({
-              allOf: [
-                {
-                  anyOf: [
-                    { type: "object", properties: { tag: { const: "a" } } },
-                    { type: "object", properties: { tag: { const: "b" } } }
-                  ]
-                },
-                {
-                  type: "object",
-                  properties: {
-                    value: { anyOf: [{ type: "string" }, { type: "number" }] }
-                  }
-                }
-              ]
-            })
-          ),
-        `Unsupported intersection of overlapping unions\n  at ["schema"]["allOf"][1]`
-      )
-    })
-
     it("distributes across a nested reference without choices", () => {
       const schema = toSchemaFromJsonSchemaDocument(
         JsonSchema.fromSchemaDraft2020_12({

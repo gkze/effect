@@ -2893,8 +2893,8 @@ export function fromRepresentations(
  * - Objects and arrays used as `const` values or reachable `enum` members throw an `Unsupported structured JSON Schema
  *   value` error. Structured enum members excluded by an explicit primitive type are discarded.
  * - Intersections of overlapping unions are limited to disjoint root-type partitions and finite primitive `anyOf`
- *   literal sets. Other union intersections, including cases that would duplicate a nested choice, throw an
- *   `Unsupported intersection of overlapping unions` error.
+ *   literal sets. Object constraints can distribute over `anyOf` while retaining nested choices in each branch.
+ *   Other union intersections throw an `Unsupported intersection of overlapping unions` error.
  * - Unknown extension keywords are ignored and their semantics are not enforced.
  * - References support schema pointers, root recursion, `$id`, and `$anchor`. External resources must be supplied
  *   through `references`; the importer never fetches documents. Missing registered targets throw an `Invalid reference`
@@ -2937,8 +2937,8 @@ export function fromJsonSchemaDocument(
  * - Objects and arrays used as `const` values or reachable `enum` members throw an `Unsupported structured JSON Schema
  *   value` error. Structured enum members excluded by an explicit primitive type are discarded.
  * - Intersections of overlapping unions are limited to disjoint root-type partitions and finite primitive `anyOf`
- *   literal sets. Other union intersections, including cases that would duplicate a nested choice, throw an
- *   `Unsupported intersection of overlapping unions` error.
+ *   literal sets. Object constraints can distribute over `anyOf` while retaining nested choices in each branch.
+ *   Other union intersections throw an `Unsupported intersection of overlapping unions` error.
  * - References support schema pointers, root recursion, `$id`, and `$anchor`. External resources must be supplied
  *   through `references`; the importer never fetches documents. Missing registered targets throw an `Invalid reference`
  *   error, and unavailable external resources throw an `Unsupported reference` error.

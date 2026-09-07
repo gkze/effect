@@ -273,4 +273,83 @@ describe("JSON Schema import semantics", () => {
       assertImport({ allOf }, [], ["a", "b", null, 1])
     }
   })
+  it("distributes object constraints over anyOf without flattening nested choices", () => {
+    const alternatives = {
+      anyOf: [
+        { type: "object", properties: { tag: { const: "a" } } },
+        { type: "object", properties: { tag: { const: "b" } } }
+      ]
+    }
+    const common = {
+      type: "object",
+      properties: {
+        value: { oneOf: [{ type: "string", minLength: 2 }, { type: "string", maxLength: 3 }] }
+      },
+      required: ["value"]
+    }
+    for (const allOf of [[alternatives, common], [common, alternatives]]) {
+      const code = assertImport({ allOf }, [{ tag: "a", value: "a" }, { tag: "b", value: "abcd" }, { value: "a" }], [
+        { tag: "c", value: "a" },
+        { tag: "a", value: "ab" },
+        { value: "ab" },
+        {},
+        { value: 1 }
+      ])
+      const generated = new Function("Schema", `return ${code.codes[0].runtime}`)(Schema) as Schema.Codec<unknown>
+      assert.isTrue(Schema.is(generated)({ tag: "a", value: "a" }))
+      assert.isFalse(Schema.is(generated)({ tag: "a", value: "ab" }))
+    }
+  })
+
+  it("keeps optional tsconfig-style selection branches permissive", () => {
+    assertImport(
+      {
+        allOf: [
+          {
+            type: "object",
+            properties: {
+              compilerOptions: {
+                type: "object",
+                properties: {
+                  target: { enum: ["es2022", "esnext"] },
+                  strict: { type: "boolean" }
+                }
+              }
+            }
+          },
+          {
+            anyOf: [
+              { type: "object", properties: { files: { type: ["array", "null"], items: { type: "string" } } } },
+              { type: "object", properties: { include: { type: ["array", "null"], items: { type: "string" } } } }
+            ]
+          }
+        ]
+      },
+      [{}, { compilerOptions: { target: "esnext" }, files: ["a.ts"] }, { files: 1 }, { files: 1, include: [] }],
+      [{ compilerOptions: { target: "bad" } }, { compilerOptions: { strict: "true" } }, { files: 1, include: 1 }, []]
+    )
+  })
+
+  it("keeps closed object scopes when distributing nested choices", () => {
+    assertImport(
+      {
+        allOf: [
+          {
+            anyOf: [
+              { type: "object", properties: { tag: { const: "a" } } },
+              { type: "object", properties: { tag: { const: "b" } } }
+            ]
+          },
+          {
+            type: "object",
+            properties: { value: { type: ["string", "number"] } },
+            required: ["value"],
+            additionalProperties: false
+          }
+        ]
+      },
+      [{ value: "ok" }, { value: 1 }],
+      [{ value: "ok", tag: "a" }, { value: true }, {}]
+    )
+  })
 })
