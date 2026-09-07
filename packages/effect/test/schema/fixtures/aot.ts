@@ -109,6 +109,14 @@ export const synchronous = {
     schema: Schema.Record(Schema.Union([Schema.Literal(1), Schema.Symbol]), Schema.String),
     inputs: [{ 1: "one", [key]: "symbol" }, { 1: "one", extra: true }, { 1: 1 }]
   },
+  templateLiteral: {
+    schema: Schema.TemplateLiteral(["count:", Schema.Int.check(Schema.isGreaterThan(0))]),
+    inputs: ["count:1", "count:0", "count:1.5", "invalid", null]
+  },
+  templateLiteralParser: {
+    schema: Schema.TemplateLiteralParser(["bit:", Schema.BooleanFromBit]),
+    inputs: ["bit:1", "bit:0", "bit:true", null]
+  },
   transformed: { schema: transformed, inputs: ["2", "-1", false] },
   checkedTransformedStruct: {
     schema: Schema.Struct({ value: transformed }).check(Schema.makeFilter((output) => {

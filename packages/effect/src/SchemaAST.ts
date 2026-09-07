@@ -1422,6 +1422,9 @@ export interface TemplateLiteral extends ASTNode {
   /** @internal */
 
   matchPart(s: string, options: ParseOptions): string | undefined
+  /** @internal */
+
+  asTemplateLiteralParser(): Arrays
 }
 
 /**
@@ -1482,8 +1485,7 @@ export const TemplateLiteral: new(
   }
   /** @internal */
   getParser(compile: SchemaParser.Compiler): SchemaParser.Parser {
-    const tuple = new Arrays(false, this.parts.map(partFromString), [])
-    const parser = compile(decodeTo(string, tuple, templateLiteralTransformation(this)))
+    const parser = compile(this.asTemplateLiteralParser())
     return (input, options) => {
       if (input === InternalParser.missing) return InternalParser.missingExit
       const result = parser(input, options)
@@ -1504,6 +1506,11 @@ export const TemplateLiteral: new(
   matchPart(s: string, options: ParseOptions): string | undefined {
     return segmentTemplateLiteralParts(this, s, options) === undefined ? undefined : s
   }
+  /** @internal */
+  asTemplateLiteralParser(): Arrays {
+    const tuple = new Arrays(false, this.parts.map(partFromString), [])
+    return decodeTo(string, tuple, templateLiteralTransformation(this))
+  }
 }
 
 /** @internal */
@@ -1513,9 +1520,17 @@ export function templateLiteralParser(parts: ReadonlyArray<AST>): Arrays {
   const normalize = memoize((encoded: AST): AST => {
     if (encoded._tag !== "Union") return encoded
     const types = mapOrSame(encoded.types, normalize)
-    return encoded.mode === "anyOf" && types === encoded.types
+    return (encoded.options?.mode ?? "anyOf") === "anyOf" && types === encoded.types
       ? encoded
-      : new Union(types, "anyOf", encoded.annotations, encoded.checks, undefined, encoded.context)
+      : new Union(
+        types,
+        { ...encoded.options, mode: "anyOf" },
+        encoded.annotations,
+        encoded.checks,
+        undefined,
+        encoded.context,
+        encoded.encodingChecks
+      )
   })
   const template = new TemplateLiteral(parts.map((part) => normalize(toEncoded(part))))
   const tuple = new Arrays(false, parts.map(partFromString), [])

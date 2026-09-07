@@ -186,7 +186,6 @@ function compileDetailedBase(ast: SchemaAST.AST): DetailedDecoder {
       const parserAst = ast.asTemplateLiteralParser()
       return (input, options) => {
         if (input === InternalParser.missing) return input
-        if (typeof input !== "string") return invalidType(ast, input, options)
         return matchesTemplateLiteral(ast, input, options)
           ? input
           : fail(
@@ -195,11 +194,13 @@ function compileDetailedBase(ast: SchemaAST.AST): DetailedDecoder {
               [
                 new SchemaIssue.Encoding(
                   parserAst,
-                  new SchemaIssue.InvalidValue(
-                    { expected: "a string matching template literal parts" },
-                    input,
-                    options
-                  ),
+                  typeof input === "string"
+                    ? new SchemaIssue.InvalidValue(
+                      { expected: "a string matching template literal parts" },
+                      input,
+                      options
+                    )
+                    : new SchemaIssue.InvalidType(SchemaAST.string, input, options),
                   input,
                   options
                 )

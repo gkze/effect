@@ -26,7 +26,14 @@ const snapshot = () =>
           events.length = 0
           const result = decode(input)
           const calls = [...events]
-          return { result, calls, is: is(input) }
+          return {
+            // Template diagnostics construct internal ASTs with fresh functions.
+            result: name === "templateLiteral" || name === "templateLiteralParser"
+              ? Result.mapError(result, (issue) => JSON.stringify(issue))
+              : result,
+            calls,
+            is: is(input)
+          }
         })
       })
       return [name, results]

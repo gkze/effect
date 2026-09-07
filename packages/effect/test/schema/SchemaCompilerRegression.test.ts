@@ -15,6 +15,19 @@ import { SchemaCompiler, SchemaJITCompiler } from "effect/unstable/schema"
 import { deepStrictEqual, strictEqual } from "../utils/assert.ts"
 
 describe("compiler regression contracts", () => {
+  it("preserves template literal issues after compilation", () => {
+    const schema = Schema.TemplateLiteral(["count:", Schema.Int.check(Schema.isGreaterThan(0))])
+    const inputs = ["count:1", "count:0", "count:1.5", "invalid", null]
+    const snapshot = () => {
+      const decode = SchemaParser.decodeUnknownResult(schema)
+      // Diagnostic ASTs contain freshly constructed transformation functions.
+      return inputs.map((input) => Result.mapError(decode(input), (issue) => JSON.stringify(issue)))
+    }
+    const interpreted = snapshot()
+    SchemaJITCompiler.enable(schema.ast)
+    deepStrictEqual(snapshot(), interpreted)
+  })
+
   it.effect("preserves missing and present undefined through eager and suspended transformations", () =>
     Effect.gen(function*() {
       for (const suspended of [false, true]) {
