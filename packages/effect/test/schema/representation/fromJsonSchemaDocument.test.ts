@@ -2002,33 +2002,30 @@ describe("fromJsonSchemaDocument", () => {
       )
     })
 
-    it("rejects a closed single pattern property", () => {
-      throws(
-        () =>
-          toSchemaFromJsonSchemaDocument(JsonSchema.fromSchemaDraft2020_12({
-            type: "object",
-            patternProperties: {
-              "a*": { type: "string" }
-            },
-            additionalProperties: false
-          })),
-        `Unsupported object keyword scopes\n  at ["schema"]`
-      )
+    it("supports a closed pattern that matches every key", () => {
+      const is = Schema.is(toSchemaFromJsonSchemaDocument(JsonSchema.fromSchemaDraft2020_12({
+        type: "object",
+        patternProperties: {
+          "a*": { type: "string" }
+        },
+        additionalProperties: false
+      })))
+      assertTrue(is({ unrelated: "value" }))
+      assertFalse(is({ unrelated: 1 }))
     })
 
-    it("rejects closed multiple pattern properties", () => {
-      throws(
-        () =>
-          toSchemaFromJsonSchemaDocument(JsonSchema.fromSchemaDraft2020_12({
-            type: "object",
-            patternProperties: {
-              "a*": { type: "string" },
-              "b*": { type: "number" }
-            },
-            additionalProperties: false
-          })),
-        `Unsupported object keyword scopes\n  at ["schema"]`
-      )
+    it("intersects closed patterns that both match every key", () => {
+      const is = Schema.is(toSchemaFromJsonSchemaDocument(JsonSchema.fromSchemaDraft2020_12({
+        type: "object",
+        patternProperties: {
+          "a*": { type: "string" },
+          "b*": { type: "number" }
+        },
+        additionalProperties: false
+      })))
+      assertTrue(is({}))
+      assertFalse(is({ unrelated: "value" }))
+      assertFalse(is({ unrelated: 1 }))
     })
 
     describe("checks", () => {
@@ -5360,7 +5357,7 @@ describe("fromJsonSchemaDocument", () => {
               }
             ]
           })),
-        `Unsupported object keyword scopes\n  at ["schema"]`
+        `Unsupported object keyword scopes\n  at ["schema"]["allOf"][0]`
       )
     })
 
@@ -5532,6 +5529,30 @@ describe("fromJsonSchemaDocument", () => {
         const is = Schema.is(schema)
         assertTrue(is("aaa"))
         assertFalse(is("bbb"))
+      })
+
+      it("reports the source path of malformed patterns", () => {
+        for (
+          const [schema, path] of [
+            [{ type: "string", pattern: "[" }, `["schema"]["pattern"]`],
+            [
+              { type: "object", patternProperties: { "[": { type: "string" } }, additionalProperties: false },
+              `["schema"]["patternProperties"]["["]`
+            ],
+            [
+              { type: "object", properties: { nested: { type: "object", propertyNames: { pattern: "[" } } } },
+              `["schema"]["properties"]["nested"]["propertyNames"]["pattern"]`
+            ]
+          ] as const
+        ) {
+          throws(
+            () =>
+              SchemaRepresentation.fromJsonSchemaDocument(JsonSchema.fromSchemaDraft2020_12(schema), {
+                patterns: "apply"
+              }),
+            `Invalid JSON Schema pattern\n  at ${path}`
+          )
+        }
       })
 
       it("ignores patterns explicitly", () => {

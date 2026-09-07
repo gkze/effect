@@ -461,7 +461,11 @@ function translateJsonSchemaMultiDocument(
       requiresFiniteKeyDomain ||= scope.additionalProperties._tag === "Never" ||
         scope.additionalProperties._tag !== "Unknown" && (scope.hasProperties || scope.patterns.length > 0)
     }
-    if (!hasFiniteKeyDomain && requiresFiniteKeyDomain) {
+    const closedPatternScope = scopes.length === 1 && scopes[0].additionalProperties._tag === "Never" &&
+        scopes[0].patterns.length > 0
+      ? scopes[0]
+      : undefined
+    if (!hasFiniteKeyDomain && requiresFiniteKeyDomain && closedPatternScope === undefined) {
       throw errorWithPath("Unsupported object keyword scopes", path)
     }
 
@@ -491,10 +495,14 @@ function translateJsonSchemaMultiDocument(
 
     const indexSignatures: Array<SchemaRepresentation.IndexSignature> = []
     if (!hasFiniteKeyDomain) {
-      const additionalProperties = combineTypes(
-        scopes.map((scope) => scope.additionalProperties),
-        [...path, "additionalProperties"]
-      )
+      // Closed patterned scopes constrain key names separately from values. Keep
+      // unmatched keys in the decoded object so the propertyNames check sees them.
+      const additionalProperties = closedPatternScope === undefined ?
+        combineTypes(
+          scopes.map((scope) => scope.additionalProperties),
+          [...path, "additionalProperties"]
+        ) :
+        unknown
       const patterns = new Map<string, ImportedObjectPattern>()
       for (const scope of scopes) {
         for (const pattern of scope.patterns) {
@@ -523,6 +531,23 @@ function translateJsonSchemaMultiDocument(
       indexSignatures.push({ parameter: string, type: additionalProperties })
     } else if (properties.length === 0) {
       indexSignatures.push({ parameter: string, type: never })
+    }
+
+    if (closedPatternScope !== undefined) {
+      const types: Array<Representation> = closedPatternScope.patterns.map((pattern) => pattern.parameter)
+      for (const [name, property] of closedPatternScope.properties) {
+        // A required name alone does not declare an allowed property.
+        if (property.type !== undefined) types.push({ _tag: "Literal", literal: name, checks: [] })
+      }
+      checks = [
+        ...checks,
+        jsonSchemaFilter("effect/schema/isPropertyNames", null, [{
+          _tag: "Union",
+          types,
+          mode: "anyOf",
+          checks: []
+        }])
+      ]
     }
 
     objectScopesByProperties.set(properties, scopes)
@@ -1039,8 +1064,15 @@ function translateJsonSchemaMultiDocument(
         throw errorWithPath(`Pattern encountered while patterns is set to "error"`, path)
       case "ignore":
         return []
-      case "apply":
-        return [jsonSchemaFilter("effect/schema/isPattern", { source: pattern, flags: "" })]
+      case "apply": {
+        let source: string
+        try {
+          source = new globalThis.RegExp(pattern).source
+        } catch {
+          throw errorWithPath("Invalid JSON Schema pattern", path)
+        }
+        return [jsonSchemaFilter("effect/schema/isPattern", { source, flags: "" })]
+      }
     }
   }
 
