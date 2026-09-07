@@ -15,8 +15,11 @@
  * process at a time, wiring the selected source stream (`stdout`, `stderr`,
  * `all`, or `fdN`) to the destination `stdin` or `fdN`.
  *
- * Scoped release and `kill` wait for the signalled process group. Without
- * `forceKillAfter`, the wait is limited to one second and never escalates.
+ * Scoped release and `kill` wait for the signalled process group, including
+ * descendants that outlive an already exited leader. This covers descendants
+ * remaining in the detached process group, not those that create a new group
+ * or session. Without `forceKillAfter`, the wait is limited to one second and
+ * never escalates.
  * With it, cleanup may take the configured duration plus a final one-second
  * wait after `SIGKILL`. Zombie descendants can consume either full bound. On
  * Windows, `taskkill` terminates the tree and only the leader's exit is awaited.
@@ -540,15 +543,18 @@ const make = Effect.gen(function*() {
         const [childProcess, exitSignal] = yield* Effect.acquireRelease(
           spawn(cmd, buildSpawnOptions(cmd.options, { cwd, env, stdio }, process.platform)),
           Effect.fnUntraced(function*([childProcess, exitSignal]) {
-            const exited = yield* Deferred.isDone(exitSignal)
-            if (exited) {
-              const [code] = yield* Deferred.await(exitSignal)
-              if (code !== 0 && Predicate.isNotNull(code)) {
-                yield* Effect.ignore(killProcessGroup(cmd, childProcess, cmd.options.killSignal ?? "SIGTERM"))
+            if (!isReferenced) {
+              const exited = yield* Deferred.isDone(exitSignal)
+              if (exited) {
+                const [code] = yield* Deferred.await(exitSignal)
+                if (code !== 0 && Predicate.isNotNull(code)) {
+                  yield* Effect.ignore(killProcessGroup(cmd, childProcess, cmd.options.killSignal ?? "SIGTERM"))
+                }
               }
               return
             }
-            if (!isReferenced) {
+            // Leader exit does not release ownership of its surviving group.
+            if (!isProcessAlive(childProcess, exitSignal)) {
               return
             }
             yield* Effect.ignore(terminateProcessGroup(cmd, childProcess, exitSignal, cmd.options))

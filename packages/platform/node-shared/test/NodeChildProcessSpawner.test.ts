@@ -8,6 +8,7 @@ import * as ByteSize from "effect/ByteSize"
 import * as Deferred from "effect/Deferred"
 import * as Effect from "effect/Effect"
 import * as Exit from "effect/Exit"
+import * as Fiber from "effect/Fiber"
 import * as FileSystem from "effect/FileSystem"
 import * as Layer from "effect/Layer"
 import * as Scope from "effect/Scope"
@@ -109,12 +110,17 @@ const liveSleep = (millis: number) =>
 const liveTimeout = (millis: number) => <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   Effect.raceFirst(effect, liveSleep(millis).pipe(Effect.andThen(Effect.die(new Error("timed out")))))
 
-const startProcessGroup = (mode: "exit-on-signal" | "ignore-signal", options?: ChildProcess.CommandOptions) =>
+const startProcessGroup = (
+  mode: "exit-on-signal" | "ignore-signal" | "ignore-signal-no-stdio" | "exit-leader",
+  options?: ChildProcess.CommandOptions,
+  directoryOverride?: string
+) =>
   Effect.gen(function*() {
     const fs = yield* FileSystem.FileSystem
-    const directory = yield* fs.makeTempDirectoryScoped()
+    const directory = directoryOverride ?? (yield* fs.makeTempDirectoryScoped())
     const marker = `${directory}/marker`
     const scope = yield* Scope.make()
+    yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
     const handle = yield* Scope.provide(scope)(ChildProcess.make(
       process.execPath,
       [processGroupFixture, "leader", mode, marker],
@@ -157,6 +163,49 @@ const timed = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   })
 
 describe.skipIf(process.platform === "win32")("process group cleanup", () => {
+  it.live("scope release force kills descendants after the leader already exited", () =>
+    Effect.gen(function*() {
+      const { descendantPid, handle, marker, scope } = yield* startProcessGroup("exit-leader", {
+        forceKillAfter: "200 millis"
+      })
+      yield* Effect.gen(function*() {
+        assert.strictEqual(yield* handle.exitCode, 0)
+        yield* Scope.close(scope, Exit.void)
+        yield* assertHeartbeatStopped(marker)
+      }).pipe(Effect.ensuring(killDescendant(descendantPid)))
+    }).pipe(Effect.provide(NodeServices)))
+
+  it.live("interruption force kills a descendant with ignored stdio", () =>
+    Effect.gen(function*() {
+      const fs = yield* FileSystem.FileSystem
+      const directory = yield* fs.makeTempDirectoryScoped()
+      const ready = yield* Deferred.make<string>()
+      const fiber = yield* Effect.gen(function*() {
+        const { marker } = yield* startProcessGroup(
+          "ignore-signal-no-stdio",
+          { forceKillAfter: "200 millis" },
+          directory
+        )
+        yield* Deferred.succeed(ready, marker)
+        return yield* Effect.never
+      }).pipe(Effect.scoped, Effect.forkChild)
+      const marker = yield* Deferred.await(ready).pipe(liveTimeout(5_000))
+      yield* Fiber.interrupt(fiber)
+      yield* assertHeartbeatStopped(marker)
+    }).pipe(Effect.provide(NodeServices)))
+
+  it.live("scope release does not escalate by default for a descendant with ignored stdio", () =>
+    Effect.gen(function*() {
+      const fs = yield* FileSystem.FileSystem
+      const { descendantPid, marker, scope } = yield* startProcessGroup("ignore-signal-no-stdio")
+      yield* Effect.gen(function*() {
+        yield* Scope.close(scope, Exit.void)
+        const sizeAfterRelease = (yield* fs.stat(marker)).size
+        yield* liveSleep(100)
+        assert.isTrue((yield* fs.stat(marker)).size > sizeAfterRelease)
+      }).pipe(Effect.ensuring(killDescendant(descendantPid)))
+    }).pipe(Effect.provide(NodeServices)))
+
   it.live("scope release waits for descendants that outlive the leader", () =>
     Effect.gen(function*() {
       const fs = yield* FileSystem.FileSystem

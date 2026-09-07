@@ -1,14 +1,20 @@
 import { spawn } from "node:child_process"
 import { appendFileSync, writeFileSync } from "node:fs"
 
-// The leader and descendant share a process group and inherited stdio. The
-// leader keeps the default SIGTERM behavior. The descendant either exits 200ms
-// after SIGTERM or ignores it while writing heartbeats to the marker file.
+// The descendant stays in the leader's process group, with either inherited
+// or ignored stdio. It exits 200ms after SIGTERM or ignores the signal while
+// writing heartbeats. The leader exits normally or on SIGTERM.
 const [role, mode, marker] = process.argv.slice(2)
 
 if (role === "leader") {
-  spawn(process.execPath, [process.argv[1], "descendant", mode, marker], {
-    stdio: ["ignore", "inherit", "inherit"]
+  const isolatedStdio = mode === "ignore-signal-no-stdio" || mode === "exit-leader"
+  const child = spawn(process.execPath, [process.argv[1], "descendant", mode, marker], {
+    stdio: isolatedStdio ? ["ignore", "ignore", "ignore", "ipc"] : ["ignore", "inherit", "inherit"]
+  })
+  child.on("message", () => {
+    process.stdout.write(`READY ${child.pid}\n`, () => {
+      if (mode === "exit-leader") process.exit(0)
+    })
   })
   setInterval(() => {}, 1_000)
 } else {
@@ -25,5 +31,9 @@ if (role === "leader") {
     setInterval(() => appendFileSync(marker, "x"), 10)
   }
   setTimeout(() => process.exit(1), 5_000)
-  process.stdout.write(`READY ${process.pid}\n`)
+  if (process.send) {
+    process.send("ready", () => process.disconnect?.())
+  } else {
+    process.stdout.write(`READY ${process.pid}\n`)
+  }
 }
