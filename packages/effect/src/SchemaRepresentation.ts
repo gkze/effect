@@ -2385,9 +2385,9 @@ export function toMultiDocument(document: Document): MultiDocument {
  *
  * **Details**
  *
- * Objects without index signatures omit `additionalProperties` by default.
- * Index value constraints remain explicit. Runtime excess-property settings
- * do not affect the generated document.
+ * For representation documents whose validation semantics can be expressed exactly in JSON Schema, importing the
+ * emitted document with {@link fromJsonSchemaDocument} reconstructs a schema that accepts the same JSON values. This
+ * is a semantic round-trip guarantee; the emitted document and reconstructed representation may have different shapes.
  *
  * **Gotchas**
  *
@@ -2399,9 +2399,8 @@ export function toMultiDocument(document: Document): MultiDocument {
  *   not be mutated after the callback returns.
  * - Local definition references returned by callbacks are resolved together with compiler-generated references.
  *   Invalid JSON Pointer URI fragments throw an `Error`.
- * - Validate incoming JSON against the document before running its codec. Codec
- *   stripping and JSON Schema validation are different operations. Closed
- *   object scopes and unions prevent a general semantic round-trip guarantee.
+ * - Effect decoding may discard excess object properties by default. Use `onExcessProperty: "error"` when comparing
+ *   validation semantics with the emitted JSON Schema.
  *
  * @see {@link toJsonSchemaMultiDocument} for multiple roots sharing definitions
  *
@@ -2827,9 +2826,9 @@ export function fromRepresentations(
  *
  * **Details**
  *
- * Translation retains supported constraints but is not a general semantic
- * round trip. Validate input against the original JSON Schema before decoding.
- * Keyword layout, definitions, and annotations may be normalized.
+ * For the Draft 2020-12 subset translated exactly by this importer, compiling the imported schema through
+ * {@link toRepresentation} and {@link toJsonSchemaDocument} produces a document that accepts the same JSON values as
+ * the input. This is a semantic round-trip guarantee; keyword layout, definitions, and annotations may be normalized.
  *
  * **Gotchas**
  *
@@ -2842,19 +2841,15 @@ export function fromRepresentations(
  *   literal sets. Other union intersections, including cases that would duplicate a nested choice, throw an
  *   `Unsupported intersection of overlapping unions` error.
  * - Unknown extension keywords are ignored and their semantics are not enforced.
- * - Import does not install a runtime excess-property setting for
- *   `additionalProperties: false`. Validate against the original document
- *   before codec decoding. Existing lowering of composed object scopes is
- *   retained, but closed objects and unions are not a semantic round-trip guarantee.
  * - Only direct local references to top-level definitions in the form `#/$defs/<escaped-token>` are supported. Root
  *   references, external references, and pointers below a definition throw an `Unsupported reference` error. A direct
  *   reference to a missing definition throws an `Invalid reference` error.
  * - Built-in declarations and checks are reconstructed with importer-owned revivers.
  * - Pattern constraints reached during translation cause an error by default. Use `patterns: "apply"` only for trusted
  *   documents, or `patterns: "ignore"` to weaken validation explicitly; ignored patterns are outside the round-trip
- *   subset.
- * - `onEnter` results replace the corresponding input nodes; translation applies
- *   to the rewritten document.
+ *   guarantee.
+ * - `onEnter` results replace the corresponding input nodes, so the round-trip guarantee applies to the rewritten
+ *   document.
  * - Callback results are used directly, and exceptions raised by a callback pass through unchanged.
  *
  * @see {@link fromJsonSchemaMultiDocument} for multiple roots sharing definitions

@@ -5545,27 +5545,6 @@ Schema can derive JSON Schemas, test data generators (Arbitraries), equivalence 
 
 By default, a schema produces a draft-2020-12 JSON Schema.
 
-Objects without index signatures omit `additionalProperties` by default.
-Explicit index constraints remain: `Record(String, Number)` constrains all
-string-keyed values, and pattern index signatures constrain their matching
-keys. Runtime `onExcessProperty` does not affect generation.
-The existing `additionalProperties` generation override remains available when
-you explicitly want a different JSON Schema policy.
-OpenAI and Anthropic structured-output adapters request closed objects
-explicitly, retaining their provider-specific contract.
-
-The intended pipeline validates incoming JSON against the JSON Schema, then
-decodes it with `toCodecJson`. The codec may strip keys accepted by JSON Schema;
-the document is not a closed description of serialized output. Importing a
-document does not add a runtime excess-property setting. Keep the original JSON
-Schema validation stage for constraints the codec cannot retain, including
-closed object scopes. Existing scope handling in composed imports is unchanged.
-
-This is not a general semantic round-trip guarantee. In particular, losing
-closure constraints can change `oneOf` matches, and stripping in a union can
-interact with array uniqueness checks. Those equivalence questions, along with
-Unicode length, integer representation, and regex flags, remain follow-up work.
-
 The result is a data structure including:
 
 - the source of the JSON Schema (e.g. `draft-2020-12`, `draft-07`, etc...)
@@ -5778,7 +5757,8 @@ console.log(JSON.stringify(document, null, 2))
       "a": {
         "type": "string"
       }
-    }
+    },
+    "additionalProperties": false
   },
   "definitions": {}
 }
@@ -5815,7 +5795,8 @@ console.log(JSON.stringify(document, null, 2))
           }
         ]
       }
-    }
+    },
+    "additionalProperties": false
   },
   "definitions": {}
 }
@@ -5895,7 +5876,8 @@ console.log(JSON.stringify(document.schema, null, 2))
   },
   "required": [
     "headers"
-  ]
+  ],
+  "additionalProperties": false
 }
 */
 
@@ -6001,7 +5983,8 @@ console.log(JSON.stringify(document, null, 2))
       },
       "required": [
         "a"
-      ]
+      ],
+      "additionalProperties": false
     }
   },
   "definitions": {}

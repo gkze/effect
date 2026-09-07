@@ -1233,6 +1233,7 @@ describe("LanguageModel", () => {
           }
         },
         required: ["name"],
+        additionalProperties: false,
         $defs: {
           "PersonEncoded": {
             type: "object",
@@ -1241,7 +1242,8 @@ describe("LanguageModel", () => {
                 type: "string"
               }
             },
-            required: ["name"]
+            required: ["name"],
+            additionalProperties: false
           }
         }
       })

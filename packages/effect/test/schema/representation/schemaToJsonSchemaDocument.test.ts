@@ -29,15 +29,18 @@ describe("Schema.toJsonSchemaDocument", () => {
             first: {
               type: "object",
               properties: { value: { type: "string" } },
-              required: ["value"]
+              required: ["value"],
+              additionalProperties: false
             },
             second: {
               type: "object",
               properties: { value: { type: "string" } },
-              required: ["value"]
+              required: ["value"],
+              additionalProperties: false
             }
           },
-          required: ["first", "second"]
+          required: ["first", "second"],
+          additionalProperties: false
         },
         definitions: {}
       }

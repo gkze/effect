@@ -13682,12 +13682,9 @@ export interface ToJsonSchemaOptions extends SchemaRepresentation.ToRepresentati
    * **Details**
    *
    * Possible values include:
-   * - `false`: Disallow additional properties
+   * - `false`: Disallow additional properties (default)
    * - `true`: Allow additional properties
    * - `JsonSchema`: Use the provided JSON Schema for additional properties
-   *
-   * By default the keyword is omitted for objects without index signatures.
-   * This override affects only generated JSON Schema, not codec parsing.
    */
   readonly additionalProperties?: boolean | JsonSchema.JsonSchema | undefined
   /**
@@ -13754,22 +13751,23 @@ export interface ToJsonSchemaOptions extends SchemaRepresentation.ToRepresentati
  * encoded ASTs. By default, anonymous non-recursive candidates remain inline, while candidates with resolved identifiers
  * become definitions. Declarations are lowered through their `toCodecJson` or `toCodec`
  * annotation when available before the representation document is compiled.
- * Objects without index signatures omit `additionalProperties` by default.
- * Explicit index value constraints remain in the generated document. Runtime
- * `onExcessProperty: "error"` does not change JSON Schema generation.
+ * For schemas whose codec JSON AST can be represented exactly in JSON Schema,
+ * importing the emitted document reconstructs a schema that accepts the same
+ * JSON values. This is a semantic round-trip guarantee; the reconstructed AST
+ * may have a different shape.
  *
  * **Gotchas**
  *
  * JSON Schema generation is best-effort. Some Effect schema semantics cannot
  * be represented exactly in JSON Schema, and importing an emitted JSON Schema
- * may produce an approximation rather than the original schema shape. When canonical
+ * may produce an equivalent approximation rather than the original schema
+ * shape. Such schemas are outside the exact round-trip subset. When canonical
  * JSON derivation adds an artificial transformation, checks and annotations on
  * its source node are not copied to the JSON target, so they do not appear in
  * the emitted document. Opaque declarations without a structural codec are
- * represented by an unconstrained JSON Schema. Validate incoming JSON against
- * the document before decoding it with `toCodecJson`. The codec may strip
- * properties that JSON Schema accepts. Import/export is not a lossless semantic
- * round trip, particularly for closed objects and unions containing them.
+ * represented by an unconstrained JSON Schema. Effect decoding may discard
+ * excess object properties by default; use `onExcessProperty: "error"` when
+ * comparing validation semantics with an emitted JSON Schema.
  *
  * @see {@link SchemaRepresentation.toJsonSchemaDocument} for compiling an existing live representation document
  *

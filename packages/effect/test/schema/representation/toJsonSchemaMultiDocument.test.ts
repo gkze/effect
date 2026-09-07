@@ -135,7 +135,8 @@ describe("SchemaRepresentation.toJsonSchemaMultiDocument", () => {
           properties: {
             child: { $ref: "#/$defs/ChildEncoded" }
           },
-          required: ["child"]
+          required: ["child"],
+          additionalProperties: false
         }
       })
     })
@@ -413,7 +414,8 @@ describe("SchemaRepresentation.toJsonSchemaMultiDocument", () => {
                 { type: "null" }
               ]
             }
-          }
+          },
+          additionalProperties: false
         },
         NodeEncoded: { $ref: "#/$defs/Objects_" }
       })
@@ -458,28 +460,32 @@ describe("SchemaRepresentation.toJsonSchemaMultiDocument", () => {
           properties: {
             next: { $ref: "#/$defs/Suspend_" }
           },
-          required: ["next"]
+          required: ["next"],
+          additionalProperties: false
         },
         NodeEncoded: {
           type: "object",
           properties: {
             next: { $ref: "#/$defs/Suspend_" }
           },
-          required: ["next"]
+          required: ["next"],
+          additionalProperties: false
         },
         Suspend_1: {
           type: "object",
           properties: {
             next: { $ref: "#/$defs/Suspend_1" }
           },
-          required: ["next"]
+          required: ["next"],
+          additionalProperties: false
         },
         NodeEncoded_1: {
           type: "object",
           properties: {
             next: { $ref: "#/$defs/Suspend_1" }
           },
-          required: ["next"]
+          required: ["next"],
+          additionalProperties: false
         }
       })
     })

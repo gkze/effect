@@ -465,7 +465,7 @@ function compileJsonSchema(
           out.patternProperties = patternProperties
         }
         if (representation.indexSignatures.length === 0) {
-          if (options?.additionalProperties !== undefined) out.additionalProperties = options.additionalProperties
+          out.additionalProperties = options?.additionalProperties ?? false
         } else if (
           additionalProperties.length === 1 &&
           representation.propertySignatures.length === 0 &&

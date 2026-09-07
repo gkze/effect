@@ -79,7 +79,7 @@ function assertRepresentationRoundTrip(
   assertJsonSchemaEquivalent(emitted, Schema.toJsonSchemaDocument(imported), inputs)
 }
 
-describe("JSON Schema round trips", () => {
+describe("JSON Schema round-trip laws", () => {
   describe("toJsonSchema(fromJsonSchema(A))", () => {
     it("applies type-specific keywords only to matching instances", () => {
       assertJsonSchemaImportRoundTrip(
@@ -178,29 +178,15 @@ describe("JSON Schema round trips", () => {
       )
     })
 
-    it("retains scoped field constraints but loses implicit closure on re-export", () => {
-      const source = JsonSchema.fromSchemaDraft2020_12({
-        type: "object",
-        additionalProperties: false,
-        allOf: [{ properties: { a: { type: "string" } } }]
-      })
-      const imported = SchemaRepresentation.fromJsonSchemaDocument(source, {
-        patterns: "apply"
-      }) as unknown as Schema.ConstraintDecoder<unknown>
-      const emitted = Schema.toJsonSchemaDocument(imported)
-      const inputs = [{}, { a: "a" }, { a: 1 }, { b: 1 }, { a: "a", b: 1 }, []]
-      const validateSource = compile(source)
-      const validateEmitted = compile(emitted)
-
-      assert.deepStrictEqual(inputs.map((input) => validateSource(input)), [true, false, false, false, false, false])
-      assert.deepStrictEqual(inputs.map((input) => validateEmitted(input)), [true, false, false, true, false, false])
-      const decode = Schema.decodeUnknownExit(imported, { onExcessProperty: "error" })
-      assertSameAcceptedValues(
-        (input) => Exit.isSuccess(decode(input)),
-        validateSource,
-        inputs
+    it("preserves closed object scopes", () => {
+      assertJsonSchemaImportRoundTrip(
+        {
+          type: "object",
+          additionalProperties: false,
+          allOf: [{ properties: { a: { type: "string" } } }]
+        },
+        [{}, { a: "a" }, { a: 1 }, { b: 1 }, { a: "a", b: 1 }, []]
       )
-      assert.deepStrictEqual(Schema.decodeUnknownSync(imported)({ b: 1 }), {})
     })
 
     it("preserves sibling additionalProperties schemas", () => {
@@ -226,23 +212,11 @@ describe("JSON Schema round trips", () => {
   })
 
   describe("fromJsonSchema(toJsonSchema(X))", () => {
-    it("preserves struct constraints but does not serialize excess-property rejection or stripping", () => {
-      const schema = Schema.Struct({ a: Schema.String })
+    it("preserves structs", () => {
       assertRepresentationRoundTrip(
-        schema,
-        [{}, { a: "a" }, { a: 1 }, []]
+        Schema.Struct({ a: Schema.String }),
+        [{}, { a: "a" }, { a: 1 }, { a: "a", b: 1 }, []]
       )
-      const emitted = Schema.toJsonSchemaDocument(schema)
-      const imported = SchemaRepresentation.fromJsonSchemaDocument(emitted) as unknown as Schema.ConstraintDecoder<
-        unknown
-      >
-      const input = { a: "a", b: 1 }
-      assert.strictEqual(Object.hasOwn(emitted.schema, "additionalProperties"), false)
-      assert.strictEqual(compile(emitted)(input), true)
-      assert.deepStrictEqual(Schema.decodeUnknownSync(schema)(input), { a: "a" })
-      assert.deepStrictEqual(Schema.decodeUnknownSync(imported)(input), input)
-      assert.isTrue(Exit.isFailure(Schema.decodeUnknownExit(schema, { onExcessProperty: "error" })(input)))
-      assert.isTrue(Exit.isSuccess(Schema.decodeUnknownExit(imported, { onExcessProperty: "error" })(input)))
     })
 
     it("preserves string indexes", () => {
@@ -252,24 +226,11 @@ describe("JSON Schema round trips", () => {
       )
     })
 
-    it("preserves pattern constraints but imports unmatched keys as modeled extras", () => {
-      const schema = Schema.Record(Schema.String.check(Schema.isUppercased()), Schema.Finite)
+    it("preserves pattern indexes for matching keys", () => {
       assertRepresentationRoundTrip(
-        schema,
+        Schema.Record(Schema.String.check(Schema.isUppercased()), Schema.Finite),
         [{}, { A: 1 }, { A: "a" }, []]
       )
-      const emitted = Schema.toJsonSchemaDocument(schema)
-      const imported = SchemaRepresentation.fromJsonSchemaDocument(emitted, {
-        patterns: "apply"
-      }) as unknown as Schema.ConstraintDecoder<unknown>
-      const validate = compile(emitted)
-      for (const input of [{ a: 1 }, { a: "a" }]) {
-        assert.strictEqual(validate(input), true)
-        assert.deepStrictEqual(Schema.decodeUnknownSync(schema)(input), {})
-        assert.deepStrictEqual(Schema.decodeUnknownSync(imported)(input), input)
-        assert.isTrue(Exit.isFailure(Schema.decodeUnknownExit(schema, { onExcessProperty: "error" })(input)))
-        assert.isTrue(Exit.isSuccess(Schema.decodeUnknownExit(imported, { onExcessProperty: "error" })(input)))
-      }
     })
 
     it("preserves pattern and string indexes", () => {

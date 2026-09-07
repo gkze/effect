@@ -182,18 +182,6 @@ it("round-trips options through the structural representation", () => {
   deepStrictEqual(SchemaRepresentation.toRepresentation(rebuilt.ast), document)
 })
 
-it("omits implicit closure but retains explicit index value constraints in JSON Schema", () => {
-  const struct = Schema.toJsonSchemaDocument(Schema.Struct({ a: Schema.String })).schema
-  strictEqual(Object.hasOwn(struct, "additionalProperties"), false)
-  deepStrictEqual(Schema.toJsonSchemaDocument(Schema.Record(Schema.String, Schema.Finite)).schema, {
-    type: "object",
-    additionalProperties: { type: "number" }
-  })
-  const explicit =
-    Schema.toJsonSchemaDocument(Schema.Struct({ a: Schema.String }), { additionalProperties: false }).schema
-  strictEqual(explicit.additionalProperties, false)
-})
-
 it("omits object order configuration and retains oneOf in generated schema source", () => {
   const schemas = [
     Schema.Struct({ a: Schema.String }),

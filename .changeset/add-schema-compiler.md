@@ -23,4 +23,3 @@ Construction shares the same cache, initializes independently from decoding, and
 - Remove `concurrency` from `ParseOptions`. Children parse sequentially; use Effect concurrency combinators for independent operations.
 - Remove `onExcessProperty: "preserve"`. Use `Record` or `StructWithRest` with an explicit value schema. `"error"` rejects keys outside the combined declared-field and index-signature coverage, including on records.
 - `SchemaAST.Union` takes `{ mode }` instead of a mode string. Read `ast.options?.mode ?? "anyOf"` instead of `ast.mode`; regenerate persisted representations. Public `Schema.Union` calls are unchanged.
-- Struct JSON Schema generation omits `additionalProperties` by default. Use generation overrides for closed objects. Validate against JSON Schema before codec decoding when its constraints matter; importing it does not configure runtime excess-property handling. OpenAI and Anthropic adapters retain closed schemas.

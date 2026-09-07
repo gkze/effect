@@ -474,7 +474,8 @@ describe("SchemaRepresentation.toJsonSchemaDocument", () => {
         }),
         {
           type: "object",
-          properties: { value: { type: "string", allOf: [{ description: "property" }] } }
+          properties: { value: { type: "string", allOf: [{ description: "property" }] } },
+          additionalProperties: false
         }
       )
     })
@@ -917,7 +918,8 @@ describe("SchemaRepresentation.toJsonSchemaDocument", () => {
               ]
             }
           },
-          required: ["value"]
+          required: ["value"],
+          additionalProperties: false
         })
       })
 
