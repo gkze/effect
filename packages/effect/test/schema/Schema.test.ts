@@ -1,4 +1,4 @@
-import { describe, it } from "@effect/vitest"
+import { assert, describe, it } from "@effect/vitest"
 import {
   BigDecimal,
   Brand,
@@ -6554,6 +6554,50 @@ Expected a value between -2147483648 and 2147483647`
   })
 
   describe("Class", () => {
+    it.effect("make preserves existing instances like the other constructor adapters", () =>
+      Effect.gen(function*() {
+        let constructions = 0
+        class A extends Schema.Class<A>("A")({ a: Schema.String }) {
+          readonly construction = ++constructions
+        }
+        const instance = new A({ a: "a" })
+
+        assert.strictEqual(A.make(instance), instance)
+        assert.strictEqual(SchemaParser.make(A)(instance), instance)
+        assert.strictEqual(Option.getOrThrow(A.makeOption(instance)), instance)
+        assert.strictEqual(yield* A.makeEffect(instance), instance)
+        assert.strictEqual(constructions, 1)
+
+        assert.notStrictEqual(new A(instance), instance)
+        assert.strictEqual(constructions, 2)
+      }))
+
+    it("make applies defaults, source checks, and the constructor once", () => {
+      let defaults = 0
+      let checks = 0
+      let constructions = 0
+      const struct = Schema.Struct({
+        a: Schema.String.pipe(Schema.withConstructorDefault(Effect.sync(() => {
+          defaults++
+          return "default"
+        })))
+      }).check(Schema.makeFilter(() => {
+        checks++
+        return true
+      }))
+      class A extends Schema.Class<A>("A")(struct) {
+        readonly construction = ++constructions
+      }
+
+      const instance = A.make({})
+
+      assert.instanceOf(instance, A)
+      assert.strictEqual(instance.a, "default")
+      assert.strictEqual(defaults, 1)
+      assert.strictEqual(checks, 1)
+      assert.strictEqual(constructions, 1)
+    })
+
     it("make with void input", () => {
       class A extends Schema.Class<A>("A")({}) {}
       deepStrictEqual(A.make(), new A())
@@ -7364,6 +7408,13 @@ Expected a value between -2147483648 and 2147483647`
   })
 
   describe("TaggedError", () => {
+    it("make preserves existing instances", () => {
+      class E extends Schema.TaggedError<E>()("E", { message: Schema.String }) {}
+      const instance = new E({ message: "failure" })
+
+      assert.strictEqual(E.make(instance), instance)
+    })
+
     it("make with void input", () => {
       class E extends Schema.TaggedError<E>()("E", {}) {}
       deepStrictEqual(E.make(), new E())

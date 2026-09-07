@@ -13,6 +13,7 @@ Install before parsers' first execution to accelerate them. JIT falls back to th
 
 ### Breaking changes
 
+- Schema class `make` methods now use the same constructor parser as `makeOption` and `makeEffect`, preserving existing instances without rerunning their constructors. Use `new MyClass(input)` when a new instance is required.
 - `Literal(0)` and `Literal(-0)` preserve the input's zero sign. Normalize explicitly if you relied on canonicalization.
 - Structs accept inherited declared fields, except `__proto__`. Record index signatures remain own-only. Check ownership before parsing if required.
 - `parseOptions` annotations no longer affect parsing. Pass options to parser APIs instead.

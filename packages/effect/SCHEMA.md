@@ -3904,6 +3904,8 @@ This is not enforced at the type level, but it may be enforced through a linter 
 - Instances compare structurally with `Equal.equals`, but they do not implement `Equal`.
 - Instances carry the class prototype at runtime, so `instanceof` checks succeed and methods are callable.
 
+For schema classes, including class-based errors, `make`, `makeOption`, and `makeEffect` use the same constructor parser. An already recognized instance is returned unchanged, without rerunning its constructor. Use `new MyClass(input)` when you need a new instance.
+
 **Example** (Creating an Opaque Struct)
 
 ```ts
