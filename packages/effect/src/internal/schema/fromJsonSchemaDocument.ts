@@ -116,6 +116,13 @@ const unknown: ImportedJsonSchemaRepresentation = { _tag: "Unknown", checks: [] 
 const string: ImportedJsonSchemaRepresentation = { _tag: "String", checks: [] }
 const unsupportedStructuredValue = "Only primitive values are supported in \"const\" and \"enum\"."
 const jsonSchemaPatternFlags = "u"
+const typeShapeIgnoredKeys = new Set([
+  "checks",
+  "annotations",
+  "customAnnotations",
+  "path",
+  "scopes"
+])
 
 function isObject(input: unknown): input is Record<string, unknown> {
   return typeof input === "object" && input !== null && !Array.isArray(input)
@@ -572,6 +579,14 @@ function translateJsonSchemaMultiDocument(
     return out
   }
 
+  /**
+   * Identifies the generated TypeScript type, which ignores checks,
+   * annotations, and import metadata such as source paths and object scopes.
+   */
+  function typeShape(representation: ImportedJsonSchemaRepresentation): string {
+    return JSON.stringify(representation, (key, value) => typeShapeIgnoredKeys.has(key) ? undefined : value)
+  }
+
   function lowerObject(
     scopes: ReadonlyArray<ImportedObjectScope>,
     checked: Checked,
@@ -586,14 +601,14 @@ function translateJsonSchemaMultiDocument(
       requiresFiniteKeyDomain ||= scope.additionalProperties._tag === "Never" ||
         scope.additionalProperties._tag !== "Unknown" && (scope.hasProperties || scope.patterns.length > 0)
     }
-    const closedPattern = scopes.length === 1 && names.size === 0 &&
-        scopes[0].additionalProperties._tag === "Never" && scopes[0].patterns.length === 1
-      ? scopes[0].patterns[0]
+    const closedPatterns = scopes.length === 1 && scopes[0].additionalProperties._tag === "Never" &&
+        scopes[0].patterns.length > 0
+      ? scopes[0].patterns
       : undefined
-    if (!hasFiniteKeyDomain && requiresFiniteKeyDomain && closedPattern === undefined) {
+    if (!hasFiniteKeyDomain && requiresFiniteKeyDomain && closedPatterns === undefined) {
       throw errorWithPath(
         scopes.some((scope) => scope.additionalProperties._tag === "Never")
-          ? "Cannot import this closed patterned object: only one pattern without properties is supported."
+          ? "Cannot import this closed patterned object: patterns from multiple object schemas are not supported."
           : "Cannot combine typed \"additionalProperties\" with other property schemas: Effect index signatures also check excluded keys.",
         path
       )
@@ -623,8 +638,21 @@ function translateJsonSchemaMultiDocument(
       properties.push({ name, type, isOptional, isMutable: false })
     }
 
-    const indexSignatures: ReadonlyArray<ImportedIndexSignature> = closedPattern !== undefined
-      ? [{ parameter: closedPattern.parameter, type: closedPattern.type }]
+    if (closedPatterns !== undefined) {
+      // Generated TypeScript index signatures cover every string key, so they
+      // are exact only when all declared and patterned values share one type.
+      const [first, ...rest] = [...closedPatterns.map((pattern) => pattern.type), ...properties.map((p) => p.type)]
+      const shape = typeShape(first)
+      if (rest.some((type) => typeShape(type) !== shape)) {
+        throw errorWithPath(
+          "Cannot import this closed patterned object: generated TypeScript index signatures apply to every key, so declared properties and patterns must share one value type.",
+          path
+        )
+      }
+    }
+
+    const indexSignatures: ReadonlyArray<ImportedIndexSignature> = closedPatterns !== undefined
+      ? closedPatterns.map((pattern) => ({ parameter: pattern.parameter, type: pattern.type }))
       : !hasFiniteKeyDomain
       ? [{
         parameter: string,
@@ -855,6 +883,11 @@ function translateJsonSchemaMultiDocument(
     if (right._tag === "Never") return right
     if (left._tag === "Unknown") return annotateIntersection(right, left, right)
     if (right._tag === "Unknown") return annotateIntersection(left, left, right)
+    // A reference intersected with itself imposes the same constraints. Keep
+    // it instead of expanding the definition, which may be recursive.
+    if (left._tag === "Reference" && right._tag === "Reference" && left.$ref === right.$ref) {
+      return annotate(left, right)
+    }
     if (left._tag === "Reference") {
       // Resolve an unannotated reference first. An annotated empty definition
       // could otherwise leave the other reference unresolved during union partitioning.
