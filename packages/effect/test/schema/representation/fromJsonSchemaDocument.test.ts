@@ -167,7 +167,7 @@ describe("fromJsonSchemaDocument", () => {
       },
       {
         codes: makeCode(
-          `Schema.Json.annotate({ "expected": "JSON value", "title": "a", "description": "b", "default": "c", "examples": ["d"], "readOnly": true, "writeOnly": true })`,
+          `Schema.Json.annotate({ "expected": "JSON value", "title": "a", "description": "b", "default": "c", "examples": ["d"], "readOnly": true, "writeOnly": true } as Schema.Annotations.Annotations)`,
           `Schema.Json`
         )
       }
@@ -3344,7 +3344,7 @@ describe("fromJsonSchemaDocument", () => {
           },
           {
             codes: makeCode(
-              `Schema.Json.annotate({ "expected": "JSON value", "title": "a", "default": "c" })`,
+              `Schema.Json.annotate({ "expected": "JSON value", "title": "a", "default": "c" } as Schema.Annotations.Annotations)`,
               `Schema.Json`
             )
           }
@@ -3363,7 +3363,7 @@ describe("fromJsonSchemaDocument", () => {
           },
           {
             codes: makeCode(
-              `Schema.Json.annotate({ "expected": "JSON value", "title": "a", "description": "b", "default": "c", "examples": ["d"] })`,
+              `Schema.Json.annotate({ "expected": "JSON value", "title": "a", "description": "b", "default": "c", "examples": ["d"] } as Schema.Annotations.Annotations)`,
               `Schema.Json`
             )
           }

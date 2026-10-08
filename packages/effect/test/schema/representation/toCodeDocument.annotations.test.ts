@@ -632,6 +632,21 @@ describe("SchemaRepresentation.toCodeDocument annotations", () => {
     assert.isFalse(Schema.is(schema)([1]))
   })
 
+  it("does not constrain generated types with imported documentation values", () => {
+    const output = SchemaRepresentation.toCodeDocument({
+      representations: [{
+        _tag: "Number",
+        checks: [],
+        annotations: { description: "offset", default: null, examples: ["one"] }
+      }],
+      references: {}
+    })
+    assert.strictEqual(
+      output.codes[0].runtime,
+      `Schema.Number.annotate({ "description": "offset", "default": null, "examples": ["one"] } as Schema.Annotations.Annotations)`
+    )
+  })
+
   it("reports missing references with their document path", () => {
     const document: SchemaRepresentation.MultiDocument = {
       representations: [{ _tag: "Reference", $ref: "Missing" }],

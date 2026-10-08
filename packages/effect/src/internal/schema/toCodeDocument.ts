@@ -305,7 +305,14 @@ export function toCodeDocument(
     method: "annotate" | "annotateKey" = "annotate"
   ): string {
     const rendered = renderAnnotations(annotations)
-    return rendered === undefined ? "" : `.${method}(${rendered})`
+    // Imported documentation values need not satisfy the schema's Type, as a
+    // JSON Schema default or example may not validate. Keep the metadata
+    // without constraining the generated codec's type.
+    const metadata =
+      annotations !== undefined && (Object.hasOwn(annotations, "default") || Object.hasOwn(annotations, "examples"))
+        ? " as Schema.Annotations.Annotations"
+        : ""
+    return rendered === undefined ? "" : `.${method}(${rendered}${metadata})`
   }
 
   function unionOptionsRuntime(options: NonNullable<SchemaRepresentation.Union["options"]>): string {
