@@ -3102,8 +3102,6 @@ describe("fromJsonSchemaDocument", () => {
       const [keyword, value] of [
         ["$dynamicRef", "#node"],
         ["contains", { type: "string" }],
-        ["dependentRequired", { a: ["b"] }],
-        ["dependentSchemas", { a: { required: ["b"] } }],
         ["unevaluatedItems", false],
         ["unevaluatedProperties", false]
       ] as const
@@ -3118,18 +3116,23 @@ describe("fromJsonSchemaDocument", () => {
       })
     }
 
-    for (const branch of ["then", "else"] as const) {
-      it(`if/${branch}`, () => {
-        throws(
-          () =>
-            toSchemaFromJsonSchemaDocument(JsonSchema.fromSchemaDraft2020_12({
-              if: { type: "string" },
-              [branch]: false
-            })),
-          `Cannot import JSON Schema keyword "if": Effect has no equivalent constraint.\n  at ["schema"]["if"]`
-        )
-      })
-    }
+    it("imports if/then/else and dependencies as conditional checks", () => {
+      for (
+        const [schema, code] of [
+          [
+            // oxlint-disable-next-line unicorn/no-thenable -- JSON Schema conditional keyword
+            { if: { type: "string" }, then: false },
+            `Schema.Union([Schema.Json.annotate({ "expected": "JSON value" })]).check(Schema.isConditional(Schema.String, Schema.Never, Schema.Json.annotate({ "expected": "JSON value" })).annotate({ "expected": "a value matching its conditional schema branch" }))`
+          ],
+          [
+            { dependentRequired: { a: ["b"] } },
+            `Schema.Union([Schema.Json.annotate({ "expected": "JSON value" })]).check(Schema.isConditional(Schema.StructWithRest(Schema.Struct({ "a": Schema.Json.annotate({ "expected": "JSON value" }) }), [Schema.Record(Schema.String, Schema.Json.annotate({ "expected": "JSON value" }))]), Schema.Union([Schema.Null, Schema.String, Schema.Number.check(Schema.isFinite().annotate({ "expected": "a finite number" })), Schema.Boolean, Schema.StructWithRest(Schema.Struct({ "b": Schema.Json.annotate({ "expected": "JSON value" }) }), [Schema.Record(Schema.String, Schema.Json.annotate({ "expected": "JSON value" }))]), Schema.Array(Schema.Json.annotate({ "expected": "JSON value" }))]), Schema.Json.annotate({ "expected": "JSON value" })).annotate({ "expected": "a value matching its conditional schema branch" }))`
+          ]
+        ] as const
+      ) {
+        assertFromJsonSchema({ schema }, { codes: makeCode(code, `Schema.Json`) })
+      }
+    })
 
     it("ignores inactive conditional and contains cardinality keywords", () => {
       for (

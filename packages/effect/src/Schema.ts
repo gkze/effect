@@ -9189,6 +9189,51 @@ export function isAdditionalProperties(
 }
 
 /**
+ * Validates a value against the branch selected by a condition schema.
+ *
+ * **When to use**
+ *
+ * Use to enforce JSON Schema `if` / `then` / `else`, or dependencies that apply
+ * only when a trigger is present.
+ *
+ * **Details**
+ *
+ * All three schemas are checked on their encoded sides. A value satisfying
+ * `condition` must satisfy `onTrue`; any other value must satisfy `onFalse`.
+ * The check never changes the value or its type.
+ *
+ * JSON Schema:
+ * This check corresponds to `if`, `then`, and `else`.
+ *
+ * @stability unstable
+ * @category validation
+ * @since 4.0.3
+ */
+export function isConditional(
+  condition: Constraint,
+  onTrue: Constraint,
+  onFalse: Constraint,
+  annotations?: Annotations.Filter
+) {
+  const schemas = [condition, onTrue, onFalse].map((schema) => toEncoded(schema).ast)
+  const [test, then, otherwise] = schemas.map((ast) => SchemaParser._issue(ast))
+  return makeFilter<unknown>(
+    (input, _ast, options) => (test(input, options) === undefined ? then : otherwise)(input, options) ?? true,
+    {
+      expected: "a value matching its conditional schema branch",
+      representation: { id: "effect/schema/isConditional", payload: null, schemas },
+      // oxlint-disable-next-line unicorn/no-thenable -- JSON Schema conditional keyword
+      toJsonSchema: ({ schemas }) => ({ if: schemas[0], then: schemas[1], else: schemas[2] }),
+      toCode: ({ schemas }) => ({
+        runtime: `Schema.isConditional(${schemas[0].runtime}, ${schemas[1].runtime}, ${schemas[2].runtime})`
+      }),
+      [InternalAnnotations.STRUCTURAL_ANNOTATION_KEY]: true,
+      ...annotations
+    }
+  )
+}
+
+/**
  * Validates that all items in an array are unique according to Effect equality.
  *
  * **Details**

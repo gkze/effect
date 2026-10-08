@@ -6388,9 +6388,10 @@ An Effect struct exported with `additionalProperties: true` therefore imports wi
 even if the original struct had none. The imported decoder retains additional properties that the original decoder
 would strip. Use the imported schema's actual checks and parse options when reasoning about validation.
 
-Import translates a Draft 2020-12 subset. `$dynamicRef`, `contains`, `dependentRequired`, `dependentSchemas`,
-active `if` / `then` / `else`, `unevaluatedItems`, and `unevaluatedProperties` are rejected with an error identifying
-the unsupported keyword. Inactive conditional keywords and `minContains` / `maxContains` without
+Import translates a Draft 2020-12 subset. `$dynamicRef`, `contains`, `unevaluatedItems`, and `unevaluatedProperties`
+are rejected with an error identifying the unsupported keyword. Active `if` / `then` / `else`, `dependentRequired`, and
+`dependentSchemas` import as `Schema.isConditional` checks, which select the `then` or `else` schema, or apply a
+dependency only when its trigger property is present, without changing the generated type. Inactive conditional keywords and `minContains` / `maxContains` without
 `contains` have no validation effect and are ignored. Unknown extension keywords are ignored and their semantics are not
 enforced. Objects and arrays used as `const` values or `enum` members are rejected. Only strings, numbers, booleans, and
 null are supported. The optional `onEnter` callback can normalize each JSON Schema node

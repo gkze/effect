@@ -1,3 +1,4 @@
+/* oxlint-disable unicorn/no-thenable -- JSON Schema conditional keywords */
 import { assert, describe, it } from "@effect/vitest"
 import { Exit, JsonSchema, Schema, SchemaRepresentation } from "effect"
 
@@ -107,6 +108,66 @@ describe("JSON Schema import semantics", () => {
       [{}, { a: "x", c: 1 }, { a: "x", d: 2 }],
       [{ a: "x", d: "y" }, { c: "x" }, { a: 1 }, { d: true }]
     )
+  })
+
+  it("selects conditional branches without narrowing unrelated types", () => {
+    assertImport({ if: { type: "string" }, then: { minLength: 2 }, else: { enum: [null, 1] } }, ["ab", null, 1], [
+      "a",
+      2,
+      {},
+      []
+    ])
+    assertImport({ if: { type: "string" }, then: false }, [1, {}, null], ["a", ""])
+    assertImport({ if: { type: "string" }, else: false }, ["a", ""], [1, {}, null])
+    assertImport({ if: { type: "string" } }, ["a", 1, null], [])
+    assertImport(
+      {
+        allOf: [
+          { if: { required: ["a"] }, then: { required: ["b"] } },
+          { type: "object", properties: { b: { type: "number" } } }
+        ]
+      },
+      [{}, { b: 1 }, { a: true, b: 1 }],
+      [{ a: true }, { b: "bad" }, 1]
+    )
+  })
+
+  it("enforces required and schema dependencies only when an object has the trigger", () => {
+    assertImport({ dependencies: { a: ["b"], c: { properties: { b: { type: "number" } }, required: ["b"] } } }, [
+      null,
+      1,
+      [],
+      {},
+      { b: "ok" },
+      { a: true, b: "ok" },
+      { c: true, b: 1 }
+    ], [{ a: true }, { c: true }, { c: true, b: "bad" }])
+  })
+
+  it("applies conditions to references", () => {
+    assertImport(
+      {
+        allOf: [{ $ref: "#/definitions/value" }],
+        if: { type: "string" },
+        then: { minLength: 2 },
+        definitions: { value: { type: ["string", "number"] } }
+      },
+      ["ab", 1],
+      ["a", null]
+    )
+  })
+
+  it("preserves conditional checks when intersecting literal unions in either order", () => {
+    for (
+      const allOf of [
+        [{ enum: ["a", "b"] }, { enum: ["a", "c"], if: true, then: false }],
+        [{ enum: ["a", "c"], if: true, then: false }, { enum: ["a", "b"] }],
+        [{ enum: ["a", "b"] }, { const: "a", if: true, then: false }],
+        [{ const: "a", if: true, then: false }, { enum: ["a", "b"] }]
+      ]
+    ) {
+      assertImport({ allOf }, [], ["a", "b", null, 1])
+    }
   })
 
   it("keeps repeated annotated recursive references in closed patterned objects", () => {

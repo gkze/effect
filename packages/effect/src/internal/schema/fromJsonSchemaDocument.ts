@@ -210,7 +210,8 @@ function translateJsonSchemaMultiDocument(
             ...element,
             type: finalize(element.type)
           })),
-          rest: representation.rest.map(finalize)
+          rest: representation.rest.map(finalize),
+          checks: representation.checks.map(finalizeCheck)
         }
       case "Objects":
         return {
@@ -229,13 +230,20 @@ function translateJsonSchemaMultiDocument(
           ].map(finalizeCheck)
         }
       case "Union":
-        return { ...representation, types: representation.types.map(finalize) }
+        return {
+          ...representation,
+          types: representation.types.map(finalize),
+          checks: representation.checks.map(finalizeCheck)
+        }
       default:
         return representation
     }
   }
 
   function finalizeCheck(check: Check): Check {
+    if (check._tag === "FilterGroup") {
+      return { ...check, checks: check.checks.map(finalizeCheck) as [Check, ...Array<Check>] }
+    }
     const representation = check.representation
     const schemas = representation?.schemas
     if (representation === undefined || schemas === undefined) {
@@ -712,7 +720,7 @@ function translateJsonSchemaMultiDocument(
       const match = rightByValue.get(value)
       if (match !== undefined) types.push(intersect(representation, annotate(match, right.annotations), path))
     }
-    return makeUnion(left, types)
+    return makeUnion({ ...left, checks: [...left.checks, ...right.checks] }, types)
   }
 
   function intersectUnionWithType(
@@ -933,13 +941,9 @@ function translateJsonSchemaMultiDocument(
     const wasInNestedResource = inNestedResource
     inNestedResource ||= !isRoot && typeof schema.$id === "string"
     for (const keyword of Object.keys(schema)) {
-      if (keyword === "if" && !Object.hasOwn(schema, "then") && !Object.hasOwn(schema, "else")) continue
       switch (keyword) {
-        case "if":
         case "$dynamicRef":
         case "contains":
-        case "dependentRequired":
-        case "dependentSchemas":
         case "not":
         case "unevaluatedItems":
         case "unevaluatedProperties":
@@ -1030,8 +1034,40 @@ function translateJsonSchemaMultiDocument(
         representation = intersect(union, representation, [...path, mode])
       }
     }
+    const conditions = collectConditionalChecks(schema, path)
+    if (conditions.length > 0) {
+      // A single-member union carries checks for every representation, including references.
+      representation = representation._tag === "Union"
+        ? { ...representation, checks: [...representation.checks, ...conditions] }
+        : { _tag: "Union", types: [representation], checks: conditions }
+    }
     inNestedResource = wasInNestedResource
     return representation
+  }
+
+  /** `if` / `then` / `else` and dependencies as checks that select a branch by condition. */
+  function collectConditionalChecks(schema: JsonSchema.JsonSchema, path: Path): Array<Check> {
+    const checks: Array<Check> = []
+    if (Object.hasOwn(schema, "if") && (Object.hasOwn(schema, "then") || Object.hasOwn(schema, "else"))) {
+      checks.push(jsonSchemaFilter("effect/schema/isConditional", null, [
+        translateSchema(schema.if, [...path, "if"]),
+        translateSchema(schema.then, [...path, "then"]),
+        translateSchema(schema.else, [...path, "else"])
+      ]))
+    }
+    for (const keyword of ["dependentRequired", "dependentSchemas"] as const) {
+      const dependencies = schema[keyword]
+      if (!isObject(dependencies)) continue
+      for (const [name, dependency] of Object.entries(dependencies)) {
+        const dependencyPath = [...path, keyword, name]
+        checks.push(jsonSchemaFilter("effect/schema/isConditional", null, [
+          translateSchema({ type: "object", required: [name] }, dependencyPath),
+          translateSchema(keyword === "dependentRequired" ? { required: dependency } : dependency, dependencyPath),
+          unknown
+        ]))
+      }
+    }
+    return checks
   }
 
   function translateType(

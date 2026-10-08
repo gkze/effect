@@ -1585,6 +1585,25 @@ export const isAdditionalPropertiesReviver: FilterReviver<{
 )
 
 /**
+ * Reviver for persisted `isConditional` checks.
+ *
+ * **When to use**
+ *
+ * Use when reconstructing documents that may contain checks created by {@link Schema.isConditional}.
+ *
+ * @see {@link Schema.isConditional} for creating the corresponding check
+ *
+ * @stability unstable
+ * @category validation
+ * @since 4.0.3
+ */
+export const isConditionalReviver: FilterReviver<null> = makeReviverFilter(
+  "effect/schema/isConditional",
+  Schema.Null,
+  ({ annotations, schemas }) => Schema.isConditional(schemas[0], schemas[1], schemas[2], annotations)
+)
+
+/**
  * Reviver for persisted `isUnique` checks.
  *
  * **When to use**
@@ -2434,6 +2453,7 @@ const jsonSchemaRevivers: ReadonlyArray<AnyReviver> = [
   isPropertyNamesReviver,
   isPatternPropertiesReviver,
   isAdditionalPropertiesReviver,
+  isConditionalReviver,
   isUniqueReviver
 ]
 
@@ -3176,9 +3196,10 @@ export function fromRepresentations(
  *   UTF-16 non-empty check. `integer` uses `Schema.isInt`, which requires safe integers.
  * - Applied patterns use `Schema.isPattern` with the `u` flag. Patterns that cannot be compiled in Unicode mode are
  *   rejected as unsupported translations with their source path.
- * - `$dynamicRef`, `contains`, `dependentRequired`, `dependentSchemas`, active `if` / `then` / `else`,
- *   `unevaluatedItems`, and `unevaluatedProperties` are rejected with an error identifying the unsupported keyword. Inactive
- *   conditional keywords and `minContains` / `maxContains` without `contains` have no validation effect and are ignored.
+ * - `$dynamicRef`, `contains`, `unevaluatedItems`, and `unevaluatedProperties` are rejected with an error identifying the
+ *   unsupported keyword. Active `if` / `then` / `else`, `dependentRequired`, and `dependentSchemas` import as
+ *   `Schema.isConditional` checks. Inactive conditional keywords and `minContains` / `maxContains` without `contains`
+ *   have no validation effect and are ignored.
  * - Objects and arrays used as `const` values or `enum` members are rejected. Only strings, numbers, booleans, and null
  *   are supported.
  * - Intersections of overlapping unions are limited to disjoint root-type partitions and finite primitive `anyOf`
