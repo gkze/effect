@@ -224,22 +224,25 @@ export function toCodeDocument(
   const sorted = topologicalSort(document.references)
   const sanitizedReferences = new Map<string, string>()
   const uniqueIdentifiers = new Set<string>()
-  let compilingRecursiveDefinition = false
+  // Recursive definitions are emitted after the non-recursive ones, which may
+  // reference them. Any reference to a recursive definition from a definition
+  // is therefore deferred.
+  let compilingDefinition = false
   let explicitSuspendDepth = 0
 
   for (const { $ref } of sorted.nonRecursives) ensureUniqueIdentifier($ref)
   for (const $ref of Object.keys(sorted.recursives)) ensureUniqueIdentifier($ref)
 
+  compilingDefinition = true
   const nonRecursives = sorted.nonRecursives.map(({ $ref, representation }) => ({
     $ref: ensureUniqueIdentifier($ref),
     code: recur(representation, ["references", $ref])
   }))
   const recursives: Record<string, SchemaRepresentation.Code> = {}
   for (const [$ref, representation] of Object.entries(sorted.recursives)) {
-    compilingRecursiveDefinition = true
     InternalRecord.assignProperty(recursives, ensureUniqueIdentifier($ref), recur(representation, ["references", $ref]))
-    compilingRecursiveDefinition = false
   }
+  compilingDefinition = false
   const codes = document.representations.map((representation, index) =>
     recur(representation, ["representations", index])
   )
@@ -356,7 +359,7 @@ export function toCodeDocument(
       }
       const identifier = ensureUniqueIdentifier(representation.$ref)
       if (
-        compilingRecursiveDefinition && explicitSuspendDepth === 0 &&
+        compilingDefinition && explicitSuspendDepth === 0 &&
         Object.hasOwn(sorted.recursives, representation.$ref)
       ) {
         return makeCode(`Schema.suspend((): Schema.Codec<${identifier}> => ${identifier})`, identifier)

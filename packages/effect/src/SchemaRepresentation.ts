@@ -2573,6 +2573,12 @@ export type Artifact =
 /**
  * Generated schema code together with named references and auxiliary artifacts.
  *
+ * **Details**
+ *
+ * Declare `references.nonRecursives` in order, then `references.recursives`, then use `codes`. Definitions defer
+ * every reference to a recursive definition with `Schema.suspend`, so this order never reads a declaration before
+ * its initialization.
+ *
  * @stability stable
  * @category models
  * @since 4.0.0
