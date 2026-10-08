@@ -519,14 +519,21 @@ export function toCodeDocument(
           const indexTypes = indexSignatures.map((signature) =>
             `readonly [x: ${signature.parameter.Type}]: ${signature.type.Type}`
           )
-          code = properties.length === 0
+          // An object type cannot repeat an index signature parameter type.
+          const hasRepeatedParameter = new Set(indexSignatures.map((signature) =>
+            signature.parameter.Type
+          )).size < indexSignatures.length
+          code = properties.length === 0 && !hasRepeatedParameter
             ? makeCode(
               `Schema.StructWithRest(Schema.Struct({ ${propertyRuntimes} }), [${indexRuntimes}])`,
               `{ ${indexTypes.join(", ")} }`
             )
             : makeCode(
               `Schema.StructWithRest(Schema.Struct({ ${propertyRuntimes} }), [${indexRuntimes}])`,
-              [`{ ${propertyTypes} }`, ...indexTypes.map((indexType) => `{ ${indexType} }`)].join(" & ")
+              [
+                ...(properties.length > 0 ? [`{ ${propertyTypes} }`] : []),
+                ...indexTypes.map((indexType) => `{ ${indexType} }`)
+              ].join(" & ")
             )
         }
         return code

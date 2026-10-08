@@ -471,6 +471,11 @@ function translateJsonSchemaMultiDocument(
     return out
   }
 
+  /** Identifies the generated TypeScript type, which ignores checks and annotations. */
+  function typeShape(representation: Representation): string {
+    return JSON.stringify(representation, (key, value) => key === "checks" || key === "annotations" ? undefined : value)
+  }
+
   function lowerObject(
     scopes: ReadonlyArray<ImportedObjectScope>,
     checks: ReadonlyArray<Check>,
@@ -486,14 +491,14 @@ function translateJsonSchemaMultiDocument(
       requiresFiniteKeyDomain ||= scope.additionalProperties._tag === "Never" ||
         scope.additionalProperties._tag !== "Unknown" && (scope.hasProperties || scope.patterns.length > 0)
     }
-    const closedPattern = scopes.length === 1 && names.size === 0 &&
-        scopes[0].additionalProperties._tag === "Never" && scopes[0].patterns.length === 1
-      ? scopes[0].patterns[0]
+    const closedPatterns = scopes.length === 1 && scopes[0].additionalProperties._tag === "Never" &&
+        scopes[0].patterns.length > 0
+      ? scopes[0].patterns
       : undefined
-    if (!hasFiniteKeyDomain && requiresFiniteKeyDomain && closedPattern === undefined) {
+    if (!hasFiniteKeyDomain && requiresFiniteKeyDomain && closedPatterns === undefined) {
       throw errorWithPath(
         scopes.some((scope) => scope.additionalProperties._tag === "Never")
-          ? "Cannot import this closed patterned object: only one pattern without properties is supported."
+          ? "Cannot import this closed patterned object: patterns from multiple object schemas are not supported."
           : "Cannot combine typed \"additionalProperties\" with other property schemas: Effect index signatures also check excluded keys.",
         path
       )
@@ -523,8 +528,21 @@ function translateJsonSchemaMultiDocument(
       properties.push({ name, type, isOptional, isMutable: false })
     }
 
-    const indexSignatures: ReadonlyArray<SchemaRepresentation.IndexSignature> = closedPattern !== undefined
-      ? [{ parameter: closedPattern.parameter, type: closedPattern.type }]
+    if (closedPatterns !== undefined) {
+      // Generated TypeScript index signatures cover every string key, so they
+      // are exact only when all declared and patterned values share one type.
+      const [first, ...rest] = [...closedPatterns.map((pattern) => pattern.type), ...properties.map((p) => p.type)]
+      const shape = typeShape(first)
+      if (rest.some((type) => typeShape(type) !== shape)) {
+        throw errorWithPath(
+          "Cannot import this closed patterned object: generated TypeScript index signatures apply to every key, so declared properties and patterns must share one value type.",
+          path
+        )
+      }
+    }
+
+    const indexSignatures: ReadonlyArray<SchemaRepresentation.IndexSignature> = closedPatterns !== undefined
+      ? closedPatterns.map((pattern) => ({ parameter: pattern.parameter, type: pattern.type }))
       : !hasFiniteKeyDomain
       ? [{
         parameter: string,
@@ -766,8 +784,6 @@ function translateJsonSchemaMultiDocument(
     if (right._tag === "Never") return right
     if (left._tag === "Unknown") return annotateIntersection(right, left, right)
     if (right._tag === "Unknown") return annotateIntersection(left, left, right)
-    if (left._tag === "Reference") return intersect(resolveReference(left, path), right, path)
-    if (right._tag === "Reference") return intersect(left, resolveReference(right, path), path)
     if (left._tag === "Suspend") {
       return annotate(
         intersect(left.thunk as ImportedJsonSchemaRepresentation, right, path),
@@ -780,6 +796,11 @@ function translateJsonSchemaMultiDocument(
         right.annotations
       )
     }
+    // A reference intersected with itself imposes the same constraints. Keep
+    // it instead of expanding the definition, which may be recursive.
+    if (left._tag === "Reference" && right._tag === "Reference" && left.$ref === right.$ref) return left
+    if (left._tag === "Reference") return intersect(resolveReference(left, path), right, path)
+    if (right._tag === "Reference") return intersect(left, resolveReference(right, path), path)
     if (left._tag === "Union" && right._tag === "Union") return intersectUnions(left, right, path)
     if (left._tag === "Union") return intersectUnionWithType(left, right, path, true)
     if (right._tag === "Union") return intersectUnionWithType(right, left, path, false)

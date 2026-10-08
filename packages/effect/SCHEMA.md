@@ -6364,9 +6364,11 @@ validation or a lossless round trip:
 - Closed objects normally have no catch-all for additional properties. The decoder strips excess properties by default;
   use `onExcessProperty: "error"` to reject them. Closed empty objects instead import as
   `Schema.Record(Schema.String, Schema.Never)` and reject string-keyed entries regardless of that option.
-  A closed object with a single
-  `patternProperties` entry and no named or required properties imports as a filtered `Schema.Record` when patterns
-  are applied. Object keyword scopes still constrain declared properties when intersecting schemas.
+  A closed object whose `patternProperties` entries and declared properties share one generated TypeScript value type
+  imports as filtered `Schema.Record` index signatures, beside any declared properties, when patterns are applied.
+  Keys matching no declared property or pattern are excess properties. Checks may differ between the values; only
+  their generated types must match, because TypeScript index signatures apply to every key. Object keyword scopes
+  still constrain declared properties when intersecting schemas.
   Combinations requiring an index signature to exclude
   explicit properties or patterned keys remain unsupported and are rejected with an explanation of the limitation.
 - With `patterns: "apply"`, open patterned objects are also rejected. Their filtered

@@ -885,19 +885,81 @@ describe("fromJsonSchemaDocument", () => {
       )
     })
 
-    it("explains the supported closed pattern form when properties are declared or required", () => {
-      for (const fields of [{ properties: { a: { type: "number" } } }, { required: ["a"] }] as const) {
-        throws(
-          () =>
-            toSchemaFromJsonSchemaDocument(JsonSchema.fromSchemaDraft2020_12({
-              type: "object",
-              patternProperties: { "^a": { type: "number" } },
-              additionalProperties: false,
-              ...fields
-            })),
-          `Cannot import this closed patterned object: only one pattern without properties is supported.\n  at ["schema"]`
+    it("imports closed patterned objects whose declared and patterned values share one type", () => {
+      assertFromJsonSchema({
+        schema: {
+          type: "object",
+          properties: { ".": { type: "number", minimum: 0 } },
+          required: ["a"],
+          patternProperties: { "^a": { type: "number" } },
+          additionalProperties: false
+        }
+      }, {
+        codes: makeCode(
+          `Schema.StructWithRest(Schema.Struct({ ".": Schema.optionalKey(Schema.Number.check(Schema.isFinite().annotate({ "expected": "a finite number" })).check(Schema.isGreaterThanOrEqualTo(0).annotate({ "expected": "a value greater than or equal to 0" }))), "a": Schema.Number.check(Schema.isFinite().annotate({ "expected": "a finite number" })) }), [Schema.Record(Schema.String.check(Schema.isPattern(new RegExp("^a", "u")).annotate({ "expected": "a string matching the RegExp ^a" })), Schema.Number.check(Schema.isFinite().annotate({ "expected": "a finite number" })))])`,
+          `{ readonly "."?: number, readonly "a": number } & { readonly [x: string]: number }`
         )
-      }
+      })
+    })
+
+    it("imports closed objects with multiple patterns sharing one value type", async () => {
+      const schema = toSchemaFromJsonSchemaDocument(JsonSchema.fromSchemaDraft2020_12({
+        type: "object",
+        patternProperties: { "^a": { type: "string" }, "b$": { type: "string", minLength: 2 } },
+        additionalProperties: false
+      }))
+      assertCode(schema, {
+        codes: makeCode(
+          `Schema.StructWithRest(Schema.Struct({  }), [Schema.Record(Schema.String.check(Schema.isPattern(new RegExp("^a", "u")).annotate({ "expected": "a string matching the RegExp ^a" })), Schema.String), Schema.Record(Schema.String.check(Schema.isPattern(new RegExp("b$", "u")).annotate({ "expected": "a string matching the RegExp b$" })), Schema.String.check(Schema.isMinCodePoints(2).annotate({ "expected": "a string with at least 2 code points" })))])`,
+          `{ readonly [x: string]: string } & { readonly [x: string]: string }`
+        )
+      })
+      const asserts = new TestSchema.Asserts(schema as unknown as Schema.ConstraintDecoder<unknown>)
+      const strictDecoding = asserts.decoding({ parseOptions: { onExcessProperty: "error" } })
+      await strictDecoding.succeed({ a: "x", bb: "yy", ab: "xy" })
+      await strictDecoding.fail({ ab: "x" }, `Expected a string with at least 2 code points\n  at ["ab"]`)
+      await strictDecoding.fail({ c: "x" }, `Expected no excess property\n  at ["c"]`)
+    })
+
+    it("compares closed pattern value types without annotations on references", async () => {
+      const schema = toSchemaFromJsonSchemaDocument(JsonSchema.fromSchemaDraft2020_12({
+        type: "object",
+        properties: { ".": { $ref: "#/$defs/Entry", description: "root" } },
+        patternProperties: { "^\\./.+": { $ref: "#/$defs/Entry", description: "subpath" } },
+        additionalProperties: false,
+        $defs: { Entry: { type: "string", pattern: "^\\./" } }
+      }))
+      const asserts = new TestSchema.Asserts(schema as unknown as Schema.ConstraintDecoder<unknown>)
+      const strictDecoding = asserts.decoding({ parseOptions: { onExcessProperty: "error" } })
+      await strictDecoding.succeed({ ".": "./index.js", "./feature": "./feature.js" })
+      await strictDecoding.fail(
+        { "./feature": "feature.js" },
+        `Expected a string matching the RegExp ^\\.\\/\n  at ["./feature"]`
+      )
+      await strictDecoding.fail({ feature: "./feature.js" }, `Expected no excess property\n  at ["feature"]`)
+    })
+
+    it("keeps a repeated reference instead of expanding it", () => {
+      assertFromJsonSchema({
+        schema: {
+          allOf: [{ $ref: "#/$defs/Node" }, { $ref: "#/$defs/Node" }],
+          $defs: {
+            Node: {
+              anyOf: [{ type: "string" }, { type: "array", items: { $ref: "#/$defs/Node" } }]
+            }
+          }
+        }
+      }, {
+        codes: makeCode(`Node`, `Node`),
+        references: {
+          recursives: {
+            Node: makeCode(
+              `Schema.Union([Schema.String, Schema.Array(Schema.suspend((): Schema.Codec<Node> => Node))]).annotate({ "identifier": "Node" })`,
+              `string | ReadonlyArray<Node>`
+            )
+          }
+        }
+      })
     })
 
     it("round-trips a closed Record with a patterned key", async () => {
@@ -1007,19 +1069,23 @@ describe("fromJsonSchemaDocument", () => {
       })
     })
 
-    it("rejects closed multiple pattern properties", () => {
-      throws(
-        () =>
-          toSchemaFromJsonSchemaDocument(JsonSchema.fromSchemaDraft2020_12({
-            type: "object",
-            patternProperties: {
-              "a*": { type: "string" },
-              "b*": { type: "number" }
-            },
-            additionalProperties: false
-          })),
-        `Cannot import this closed patterned object: only one pattern without properties is supported.\n  at ["schema"]`
-      )
+    it("rejects closed patterned objects whose values do not share one type", () => {
+      for (
+        const fields of [
+          { patternProperties: { "a*": { type: "string" }, "b*": { type: "number" } } },
+          { properties: { a: { type: "string" } }, patternProperties: { "^b": { type: "number" } } }
+        ]
+      ) {
+        throws(
+          () =>
+            toSchemaFromJsonSchemaDocument(JsonSchema.fromSchemaDraft2020_12({
+              type: "object",
+              ...fields,
+              additionalProperties: false
+            })),
+          `Cannot import this closed patterned object: generated TypeScript index signatures apply to every key, so declared properties and patterns must share one value type.\n  at ["schema"]`
+        )
+      }
     })
 
     describe("checks", () => {
@@ -2952,7 +3018,7 @@ describe("fromJsonSchemaDocument", () => {
               }
             ]
           })),
-        `Cannot import this closed patterned object: only one pattern without properties is supported.\n  at ["schema"]["allOf"][0]`
+        `Cannot import this closed patterned object: patterns from multiple object schemas are not supported.\n  at ["schema"]["allOf"][0]`
       )
     })
 
