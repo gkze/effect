@@ -7,6 +7,7 @@ import type * as SchemaRepresentation from "../../SchemaRepresentation.ts"
 import { errorWithPath } from "../errors.ts"
 import * as InternalRecord from "../record.ts"
 import { fromRepresentation, fromRepresentations } from "./fromRepresentation.ts"
+import { formats } from "./jsonSchemaFormat.ts"
 
 type Path = ReadonlyArray<string | number>
 type Representation = SchemaRepresentation.Representation
@@ -1084,7 +1085,8 @@ function translateJsonSchemaMultiDocument(
   ): ImportedJsonSchemaRepresentation {
     const types = Array.isArray(schema.type) && schema.type.every(isImportedJsonSchemaType)
       ? schema.type
-      : !isImportedJsonSchemaType(schema.type) && hasTypeSpecificKeywords(schema)
+      : !isImportedJsonSchemaType(schema.type) &&
+          (hasTypeSpecificKeywords(schema) || options?.formats === "apply" && typeof schema.format === "string")
       ? jsonSchemaValueTypes
       : undefined
     if (types !== undefined) {
@@ -1172,6 +1174,17 @@ function translateJsonSchemaMultiDocument(
 
   function collectStringChecks(schema: JsonSchema.JsonSchema, path: Path): Array<Check> {
     const checks: Array<Check> = []
+    if (options?.formats === "apply" && typeof schema.format === "string") {
+      if (!Object.hasOwn(formats, schema.format)) {
+        throw errorWithPath(
+          `Cannot apply JSON Schema format ${
+            JSON.stringify(schema.format)
+          }: only uri, email, date, and regex are supported.`,
+          [...path, "format"]
+        )
+      }
+      checks.push(jsonSchemaFilter("effect/schema/isFormat", schema.format))
+    }
     if (schema.minLength === 1) {
       addNumberCheck(checks, schema.minLength, "effect/schema/isMinLength", "minLength")
     } else {

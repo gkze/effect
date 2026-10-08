@@ -818,6 +818,17 @@ describe("SchemaRepresentation built-in object revivers", () => {
     })
   })
 
+  it("revives isFormat", () => {
+    assertFilterReviver({
+      schema: Schema.String.check(Schema.isFormat("date")),
+      id: "effect/schema/isFormat",
+      payload: "date",
+      reviver: SchemaRepresentation.isFormatReviver,
+      valid: "2024-02-29",
+      invalid: "2023-02-29"
+    })
+  })
+
   it("persists the encoded key schema for isPropertyNames", () => {
     const names = Schema.String.check(Schema.isPattern(/^[A-Z]/))
     const check = Schema.isPropertyNames(names)

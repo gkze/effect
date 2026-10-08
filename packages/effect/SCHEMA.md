@@ -6383,6 +6383,8 @@ validation or a lossless round trip:
 - `integer` uses `Schema.isInt` and rejects integers outside JavaScript's safe integer range.
 - Applied patterns use `Schema.isPattern` with the `u` flag. Patterns that cannot be compiled in Unicode mode are
   rejected as unsupported translations, with their source path, rather than interpreted with different semantics.
+- `format` is an annotation by default. With `formats: "apply"`, `uri`, `email`, `date`, and `regex` use
+  `Schema.isFormat`, and any other reached format is rejected with its source path.
 
 An Effect struct exported with `additionalProperties: true` therefore imports with a JSON-valued index signature,
 even if the original struct had none. The imported decoder retains additional properties that the original decoder

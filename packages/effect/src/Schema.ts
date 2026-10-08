@@ -42,6 +42,7 @@ import { effectIsExit } from "./internal/effect.ts"
 import * as InternalGraph from "./internal/graph.ts"
 import * as InternalRecord from "./internal/record.ts"
 import * as InternalAnnotations from "./internal/schema/annotations.ts"
+import { formats as jsonSchemaFormats } from "./internal/schema/jsonSchemaFormat.ts"
 import * as InternalMake from "./internal/schema/make.ts"
 import * as InternalStandardSchema from "./internal/schema/standardSchema.ts"
 import * as InternalToCodec from "./internal/schema/toCodec.ts"
@@ -9231,6 +9232,37 @@ export function isConditional(
       ...annotations
     }
   )
+}
+
+/**
+ * Validates a string using a supported JSON Schema format.
+ *
+ * **When to use**
+ *
+ * Use to assert JSON Schema `format` values that are otherwise annotations.
+ *
+ * **Details**
+ *
+ * Supports absolute RFC 3986 URIs (`uri`), ASCII dot-atom email addresses with
+ * a dotted domain (`email`), RFC 3339 full dates (`date`), and native
+ * ECMAScript regular expressions (`regex`). The check does not transform the
+ * string.
+ *
+ * JSON Schema:
+ * This check corresponds to the `format` keyword.
+ *
+ * @stability unstable
+ * @category validation
+ * @since 4.0.3
+ */
+export function isFormat(format: "uri" | "email" | "date" | "regex", annotations?: Annotations.Filter) {
+  return makeFilter<string>(jsonSchemaFormats[format], {
+    expected: `a string matching the ${format} format`,
+    representation: { id: "effect/schema/isFormat", payload: format },
+    toJsonSchema: () => ({ format }),
+    toCode: () => ({ runtime: `Schema.isFormat(${JSON.stringify(format)})` }),
+    ...annotations
+  })
 }
 
 /**
