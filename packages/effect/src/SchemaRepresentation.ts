@@ -1604,6 +1604,25 @@ export const isConditionalReviver: FilterReviver<null> = makeReviverFilter(
 )
 
 /**
+ * Reviver for persisted `isFormat` checks.
+ *
+ * **When to use**
+ *
+ * Use when reconstructing documents that may contain checks created by {@link Schema.isFormat}.
+ *
+ * @see {@link Schema.isFormat} for creating the corresponding check
+ *
+ * @stability unstable
+ * @category validation
+ * @since 4.0.3
+ */
+export const isFormatReviver: FilterReviver<"uri" | "email" | "date" | "regex"> = makeReviverFilter(
+  "effect/schema/isFormat",
+  Schema.Literals(["uri", "email", "date", "regex"]),
+  ({ annotations, payload }) => Schema.isFormat(payload, annotations)
+)
+
+/**
  * Reviver for persisted `isUnique` checks.
  *
  * **When to use**
@@ -2480,6 +2499,7 @@ const jsonSchemaRevivers: ReadonlyArray<AnyReviver> = [
   isPatternPropertiesReviver,
   isAdditionalPropertiesReviver,
   isConditionalReviver,
+  isFormatReviver,
   isUniqueReviver
 ]
 
@@ -2560,6 +2580,13 @@ export interface FromJsonSchemaOptions {
    * @see Schema.ToJsonSchemaOptions
    */
   readonly includeAnnotationKey?: ((key: string) => boolean) | undefined
+  /**
+   * Applies supported string `format` assertions (`uri`, `email`, `date`, and `regex`) when set to `"apply"`. Other
+   * reached formats then throw. By default, formats are annotations without checks.
+   *
+   * @default "ignore"
+   */
+  readonly formats?: "ignore" | "apply" | undefined
 }
 
 /**
@@ -3259,6 +3286,8 @@ export function fromRepresentations(
  *   UTF-16 non-empty check. `integer` uses `Schema.isInt`, which requires safe integers.
  * - Applied patterns use `Schema.isPattern` with the `u` flag. Patterns that cannot be compiled in Unicode mode are
  *   rejected as unsupported translations with their source path.
+ * - Formats are annotations by default. With `formats: "apply"`, `uri`, `email`, `date`, and `regex` use
+ *   `Schema.isFormat`; other reached formats are rejected with their source path.
  * - `$dynamicRef`, `contains`, `unevaluatedItems`, and `unevaluatedProperties` are rejected with an error identifying the
  *   unsupported keyword. Active `if` / `then` / `else`, `dependentRequired`, and `dependentSchemas` import as
  *   `Schema.isConditional` checks. Inactive conditional keywords and `minContains` / `maxContains` without `contains`

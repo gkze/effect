@@ -181,6 +181,47 @@ describe("JSON Schema import semantics", () => {
     }
   })
 
+  it("applies opt-in formats in native and generated schemas", () => {
+    const examples = {
+      uri: {
+        valid: ["https://example.test/a?b=c#d", "urn:example:animal", "mailto:a@b.test", "http://[::1]/"],
+        invalid: ["relative", "http://a/%xx", "http://[bad]/", "https://a/\n"]
+      },
+      email: {
+        valid: ["a+b@example.test", "a.b@sub.example.test"],
+        invalid: ["a@b", "a..b@example.test", "a@-bad.test"]
+      },
+      date: {
+        valid: ["2000-02-29", "2024-02-29", "2023-12-31"],
+        invalid: ["1900-02-29", "2023-02-29", "2024-04-31", "2024-13-01"]
+      },
+      regex: { valid: ["^a+$", ""], invalid: ["[", "("] }
+    }
+    for (const [format, values] of Object.entries(examples)) {
+      for (const json of [{ type: "string", format }, { format }]) {
+        const document = JsonSchema.fromSchemaDraft2020_12(json)
+        const schema = SchemaRepresentation.fromJsonSchemaDocument(document, { formats: "apply" })
+        const code = SchemaRepresentation.toCodeDocument(SchemaRepresentation.toRepresentations([schema.ast]))
+        const generated = new Function("Schema", `return ${code.codes[0].runtime}`)(Schema) as Schema.Codec<unknown>
+        for (const value of values.valid) {
+          assert.isTrue(Schema.is(schema)(value), value)
+          assert.isTrue(Schema.is(generated)(value), value)
+        }
+        for (const value of values.invalid) {
+          assert.isFalse(Schema.is(schema)(value), value)
+          assert.isFalse(Schema.is(generated)(value), value)
+          assert.isTrue(Schema.is(SchemaRepresentation.fromJsonSchemaDocument(document))(value))
+        }
+        if (json.type === undefined) assert.isTrue(Schema.is(schema)(1))
+      }
+    }
+    assert.throws(() =>
+      SchemaRepresentation.fromJsonSchemaDocument(
+        JsonSchema.fromSchemaDraft2020_12({ type: "string", format: "custom" }),
+        { formats: "apply" }
+      ), /Cannot apply JSON Schema format "custom"/)
+  })
+
   it("keeps repeated annotated recursive references in closed patterned objects", () => {
     assertImport(
       {
