@@ -170,6 +170,17 @@ describe("JSON Schema import semantics", () => {
     }
   })
 
+  it("discards structured enum members excluded by an explicit type", () => {
+    assertImport({ type: "string", enum: [[], {}, "ok"] }, ["ok"], [[], {}, "bad", 1])
+    assertImport({ type: ["string", "array"], enum: [{}, "ok"] }, ["ok"], [{}, [], "bad"])
+    for (const json of [{ enum: [{}] }, { type: ["string", "object"], enum: [{}] }]) {
+      assert.throws(
+        () => SchemaRepresentation.fromJsonSchemaDocument(JsonSchema.fromSchemaDraft2020_12(json)),
+        /Only primitive values are supported in "const" and "enum"/
+      )
+    }
+  })
+
   it("keeps repeated annotated recursive references in closed patterned objects", () => {
     assertImport(
       {
