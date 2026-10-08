@@ -1,4 +1,4 @@
-import { type JsonSchema, type Schema, SchemaRepresentation } from "effect"
+import { type JsonSchema, Schema, SchemaRepresentation } from "effect"
 import { describe, expect, it } from "tstyche"
 
 describe("JSON Schema importer", () => {
@@ -45,5 +45,23 @@ describe("JSON Schema importer", () => {
       patterns: "safe"
     }
     void invalidOptions
+  })
+
+  it("limits the format policy to the supported modes", () => {
+    const options: SchemaRepresentation.FromJsonSchemaOptions = { formats: "apply" }
+
+    expect(options.formats).type.toBe<"ignore" | "apply" | undefined>()
+  })
+
+  it("preserves the checked schema type for imported assertions", () => {
+    const text = Schema.String.check(Schema.isFormat("uri"))
+    const conditional = Schema.Number.check(Schema.isConditional(Schema.Number, Schema.Number, Schema.Never))
+    const object = Schema.Struct({ name: Schema.String }).check(
+      Schema.isAdditionalProperties({ properties: ["name"], patterns: [/^x/u] }, Schema.Boolean),
+      Schema.isPatternProperties(/^x/u, Schema.Number)
+    )
+    expect<typeof text.Type>().type.toBe<string>()
+    expect<typeof conditional.Type>().type.toBe<number>()
+    expect<typeof object.Type>().type.toBe<{ readonly name: string }>()
   })
 })
