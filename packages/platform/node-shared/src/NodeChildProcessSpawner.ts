@@ -16,9 +16,9 @@
  * `all`, or `fdN`) to the destination `stdin` or `fdN`.
  *
  * Scoped release and `kill` wait for the signalled process group. Without
- * `forceKillAfter`, cleanup waits for the leader to exit with no time limit,
- * then gives remaining group members up to one second to exit, without
- * escalating.
+ * `forceKillAfter`, cleanup waits for a successfully signalled leader to exit
+ * with no time limit, then gives remaining group members up to one second to
+ * exit, without escalating.
  * With it, cleanup may take the configured duration plus a final one-second
  * wait after `SIGKILL`. Zombie descendants can consume either full bound. On
  * Windows, `taskkill` terminates the tree while the leader is running, and
@@ -28,10 +28,23 @@
  * POSIX cleanup targets a numeric process-group ID. If the group disappears
  * and its ID is reused before cleanup, an unrelated group may be signalled.
  *
+ * If process-group probes remain indeterminate after the bounded wait, or a
+ * group remains present after configured `forceKillAfter` escalation, `kill`
+ * fails with a `PlatformError` whose `reason.module` is `"ChildProcess"`
+ * and `reason.method` is `"verifyTermination"`. Scoped release of a referenced
+ * process dies with that same error. Match these fields to retain resources
+ * whose safe release depends on termination. The reason is `PermissionDenied`
+ * or `Unknown` for persistent probe errors (with the original error in
+ * `reason.cause`), or `TimedOut` when the group still exists after configured
+ * `forceKillAfter` escalation. Transient probe errors are retried within the
+ * existing native-time bounds. This reports unconfirmed cleanup; it does not
+ * provide OS process containment.
+ *
  * @stability unstable
  * @since 4.0.0
  */
 import type * as Arr from "effect/Array"
+import * as Cause from "effect/Cause"
 import * as Deferred from "effect/Deferred"
 import * as Duration from "effect/Duration"
 import * as Effect from "effect/Effect"
@@ -39,7 +52,7 @@ import * as Exit from "effect/Exit"
 import * as FileSystem from "effect/FileSystem"
 import * as Layer from "effect/Layer"
 import * as Path from "effect/Path"
-import type * as PlatformError from "effect/PlatformError"
+import * as PlatformError from "effect/PlatformError"
 import * as Predicate from "effect/Predicate"
 import * as ChildProcess from "effect/process/ChildProcess"
 import type { ChildProcessHandle } from "effect/process/ChildProcessSpawner"
@@ -81,6 +94,7 @@ const toPlatformError = (
 type ExitCodeWithSignal = readonly [code: number | null, signal: NodeJS.Signals | null]
 type ExitSignal = Deferred.Deferred<ExitCodeWithSignal>
 
+const terminationVerificationMethod = "verifyTermination"
 const processGroupGraceMillis = 1_000
 const processGroupPollIntervalMillis = 10
 
@@ -93,19 +107,31 @@ const handleInputErrors = (writable: Writable): void => {
   writable.once("close", () => writable.off("error", onError))
 }
 
-/** The leader has not exited, or a member of its process group still exists. */
-const isProcessAlive = (childProcess: NodeChildProcess.ChildProcess, exitSignal: ExitSignal): boolean => {
+type ProcessState =
+  | { readonly _tag: "Running" }
+  | { readonly _tag: "Exited" }
+  | { readonly _tag: "Indeterminate"; readonly cause: unknown }
+
+type TerminationError = {
+  readonly _tag: "Signal" | "Verification"
+  readonly error: PlatformError.PlatformError
+}
+
+/** Probe errors do not establish that the process group is absent. */
+const processState = (childProcess: NodeChildProcess.ChildProcess, exitSignal: ExitSignal): ProcessState => {
   if (!Deferred.isDoneUnsafe(exitSignal)) {
-    return true
+    return { _tag: "Running" }
   }
   if (globalThis.process.platform === "win32") {
-    return false
+    return { _tag: "Exited" }
   }
   try {
     globalThis.process.kill(-childProcess.pid!, 0)
-    return true
-  } catch {
-    return false
+    return { _tag: "Running" }
+  } catch (cause) {
+    return Predicate.hasProperty(cause, "code") && cause.code === "ESRCH"
+      ? { _tag: "Exited" }
+      : { _tag: "Indeterminate", cause }
   }
 }
 
@@ -469,8 +495,8 @@ const make = Effect.gen(function*() {
     childProcess: NodeChildProcess.ChildProcess,
     exitSignal: ExitSignal,
     timeoutMillis: number
-  ): Effect.Effect<void> =>
-    Effect.callback<void>((resume) => {
+  ): Effect.Effect<ProcessState> =>
+    Effect.callback<ProcessState>((resume) => {
       const deadline = Date.now() + timeoutMillis
       let timer: NodeJS.Timeout | undefined
       const stop = () => {
@@ -479,9 +505,10 @@ const make = Effect.gen(function*() {
       }
       const poll = () => {
         clearTimeout(timer)
-        if (Date.now() >= deadline || !isProcessAlive(childProcess, exitSignal)) {
+        const state = processState(childProcess, exitSignal)
+        if (Date.now() >= deadline || state._tag === "Exited") {
           stop()
-          resume(Effect.void)
+          resume(Effect.succeed(state))
           return
         }
         timer = setTimeout(poll, processGroupPollIntervalMillis)
@@ -500,18 +527,46 @@ const make = Effect.gen(function*() {
   ) {
     const signalGroup = (signal: NodeJS.Signals) =>
       killProcessGroup(command, childProcess, signal).pipe(
-        Effect.catch(() => killProcess(command, childProcess, signal))
+        Effect.catch((groupError) =>
+          killProcess(command, childProcess, signal).pipe(Effect.catch(() => Effect.fail(groupError)))
+        ),
+        Effect.match({ onFailure: (error) => error, onSuccess: () => undefined })
       )
-    yield* signalGroup(options?.killSignal ?? "SIGTERM")
-    if (Predicate.isUndefined(options?.forceKillAfter)) {
+    let signalError = yield* signalGroup(options?.killSignal ?? "SIGTERM")
+    const forceKillAfter = options?.forceKillAfter
+    // Without forceKillAfter, wait for a signalled leader without a time limit
+    // before the bounded descendant drain. A failed signal leaves no reason to
+    // expect the leader to exit, so verification stays bounded.
+    if (forceKillAfter === undefined && signalError === undefined) {
       yield* Deferred.await(exitSignal)
-      yield* awaitProcessExit(childProcess, exitSignal, processGroupGraceMillis)
-    } else {
-      yield* awaitProcessExit(childProcess, exitSignal, Duration.toMillis(options.forceKillAfter))
-      if (isProcessAlive(childProcess, exitSignal)) {
-        yield* signalGroup("SIGKILL")
-        yield* awaitProcessExit(childProcess, exitSignal, processGroupGraceMillis)
-      }
+    }
+    let state = yield* awaitProcessExit(
+      childProcess,
+      exitSignal,
+      forceKillAfter === undefined ? processGroupGraceMillis : Duration.toMillis(forceKillAfter)
+    )
+    if (forceKillAfter !== undefined && state._tag !== "Exited") {
+      signalError = yield* signalGroup("SIGKILL")
+      state = yield* awaitProcessExit(childProcess, exitSignal, processGroupGraceMillis)
+    }
+    if (state._tag === "Indeterminate" || (forceKillAfter !== undefined && state._tag === "Running")) {
+      const cause = state._tag === "Indeterminate" ? state.cause : signalError
+      const permissionDenied = Predicate.hasProperty(cause, "code") &&
+        (cause.code === "EPERM" || cause.code === "EACCES")
+      return yield* Effect.fail<TerminationError>({
+        _tag: "Verification",
+        error: PlatformError.systemError({
+          _tag: state._tag === "Running" ? "TimedOut" : permissionDenied ? "PermissionDenied" : "Unknown",
+          module: "ChildProcess",
+          method: terminationVerificationMethod,
+          pathOrDescriptor: childProcess.pid,
+          description: "Process group termination could not be confirmed",
+          cause
+        })
+      })
+    }
+    if (signalError !== undefined && state._tag === "Running") {
+      return yield* Effect.fail<TerminationError>({ _tag: "Signal", error: signalError })
     }
     yield* Deferred.await(exitSignal)
   })
@@ -566,20 +621,28 @@ const make = Effect.gen(function*() {
         const [childProcess, exitSignal] = yield* Effect.acquireRelease(
           spawn(cmd, buildSpawnOptions(cmd.options, { cwd, env, stdio }, process.platform)),
           Effect.fnUntraced(function*([childProcess, exitSignal]) {
+            // Unconfirmed termination of a referenced group must not be
+            // mistaken for successful release; unreferenced cleanup stays
+            // best-effort.
+            const release = terminateProcessGroup(cmd, childProcess, exitSignal, cmd.options).pipe(
+              Effect.catch((failure) =>
+                failure._tag === "Verification" && isReferenced ? Effect.die(failure.error) : Effect.void
+              )
+            )
             const exited = yield* Deferred.isDone(exitSignal)
             if (exited) {
               const [code] = yield* Deferred.await(exitSignal)
               if (code !== 0 && Predicate.isNotNull(code)) {
-                yield* Effect.ignore(terminateProcessGroup(cmd, childProcess, exitSignal, cmd.options))
+                yield* release
               } else if (isReferenced && process.platform !== "win32" && cmd.options.detached !== false) {
-                yield* Effect.ignore(terminateProcessGroup(cmd, childProcess, exitSignal, cmd.options))
+                yield* release
               }
               return
             }
             if (!isReferenced) {
               return
             }
-            yield* Effect.ignore(terminateProcessGroup(cmd, childProcess, exitSignal, cmd.options))
+            yield* release
           })
         )
 
@@ -617,7 +680,9 @@ const make = Effect.gen(function*() {
           return Effect.fail(toPlatformError("exitCode", error, cmd))
         })
         const kill = (options?: ChildProcess.KillOptions | undefined) =>
-          terminateProcessGroup(cmd, childProcess, exitSignal, options)
+          terminateProcessGroup(cmd, childProcess, exitSignal, options).pipe(
+            Effect.mapError((failure) => failure.error)
+          )
 
         return makeHandle({
           pid,
@@ -688,8 +753,20 @@ const make = Effect.gen(function*() {
         }
 
         const handle = handles[handles.length - 1]
-        const kill = (options?: ChildProcess.KillOptions | undefined) =>
-          Effect.forEach([...handles].reverse(), (handle) => Effect.ignore(handle.kill(options)), { discard: true })
+        const kill = Effect.fnUntraced(function*(options?: ChildProcess.KillOptions) {
+          let cause: Cause.Cause<PlatformError.PlatformError> = Cause.empty
+          for (const handle of [...handles].reverse()) {
+            yield* handle.kill(options).pipe(Effect.catch((error) => {
+              if (error.reason.module === "ChildProcess" && error.reason.method === terminationVerificationMethod) {
+                cause = Cause.combine(cause, Cause.fail(error))
+              }
+              return Effect.void
+            }))
+          }
+          if (cause.reasons.length > 0) {
+            return yield* Effect.failCause(cause)
+          }
+        })
         const unref = Effect.gen(function*() {
           const rerefs: Array<Effect.Effect<void, PlatformError.PlatformError>> = []
           for (const handle of handles) {
