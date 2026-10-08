@@ -6368,13 +6368,14 @@ validation or a lossless round trip:
   imports as filtered `Schema.Record` index signatures, beside any declared properties, when patterns are applied.
   Keys matching no declared property or pattern are excess properties. Checks may differ between the values; only
   their generated types must match, because TypeScript index signatures apply to every key. Object keyword scopes
-  still constrain declared properties when intersecting schemas.
-  Combinations requiring an index signature to exclude
-  explicit properties or patterned keys remain unsupported and are rejected with an explanation of the limitation.
-- With `patterns: "apply"`, open patterned objects are also rejected. Their filtered
-  index and catch-all would produce incompatible TypeScript index signatures. This includes `additionalProperties`
-  set to `true`, `{}`, or omitted. An intersection with a closed object can still be imported when it reduces the
-  result to a finite set of properties.
+  still constrain declared properties when intersecting schemas. Closed patterned objects that need different
+  index signature value types, or patterns combined from several closed object schemas, are rejected with an
+  explanation of the limitation.
+- With `patterns: "apply"`, open patterned objects, and typed `additionalProperties` beside declared properties,
+  import with a JSON-valued index signature plus `Schema.isPatternProperties` and `Schema.isAdditionalProperties`
+  checks. The checks enforce each object schema's patterned and additional values without an index signature whose
+  TypeScript type would also apply to unmatched or declared keys. An intersection with a closed object still reduces
+  the result to a finite set of properties when possible.
 - `minProperties`, `maxProperties`, and `propertyNames` use the existing checks on the decoded object, after excess
   properties have been stripped. No separate validation of the original object is added.
 - String `minLength` and `maxLength` count Unicode code points through `Schema.isMinCodePoints` and

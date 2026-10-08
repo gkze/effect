@@ -1532,6 +1532,59 @@ export const isPropertyNamesReviver: FilterReviver<null> = makeReviverFilter(
 )
 
 /**
+ * Reviver for persisted `isPatternProperties` checks.
+ *
+ * **When to use**
+ *
+ * Use when reconstructing documents that may contain checks created by {@link Schema.isPatternProperties}.
+ *
+ * @see {@link Schema.isPatternProperties} for creating the corresponding check
+ *
+ * @stability unstable
+ * @category validation
+ * @since 4.0.3
+ */
+export const isPatternPropertiesReviver: FilterReviver<{
+  readonly source: string
+  readonly flags: string
+}> = makeReviverFilter(
+  "effect/schema/isPatternProperties",
+  IsPatternPayload,
+  ({ annotations, payload, schemas }) =>
+    Schema.isPatternProperties(new globalThis.RegExp(payload.source, payload.flags), schemas[0], annotations)
+)
+
+/**
+ * Reviver for persisted `isAdditionalProperties` checks.
+ *
+ * **When to use**
+ *
+ * Use when reconstructing documents that may contain checks created by {@link Schema.isAdditionalProperties}.
+ *
+ * @see {@link Schema.isAdditionalProperties} for creating the corresponding check
+ *
+ * @stability unstable
+ * @category validation
+ * @since 4.0.3
+ */
+export const isAdditionalPropertiesReviver: FilterReviver<{
+  readonly properties: ReadonlyArray<string>
+  readonly patterns: ReadonlyArray<{ readonly source: string; readonly flags: string }>
+}> = makeReviverFilter(
+  "effect/schema/isAdditionalProperties",
+  Schema.Struct({ properties: Schema.Array(Schema.String), patterns: Schema.Array(IsPatternPayload) }),
+  ({ annotations, payload, schemas }) =>
+    Schema.isAdditionalProperties(
+      {
+        properties: payload.properties,
+        patterns: payload.patterns.map((pattern) => new globalThis.RegExp(pattern.source, pattern.flags))
+      },
+      schemas[0],
+      annotations
+    )
+)
+
+/**
  * Reviver for persisted `isUnique` checks.
  *
  * **When to use**
@@ -2379,6 +2432,8 @@ const jsonSchemaRevivers: ReadonlyArray<AnyReviver> = [
   isMinPropertiesReviver,
   isMaxPropertiesReviver,
   isPropertyNamesReviver,
+  isPatternPropertiesReviver,
+  isAdditionalPropertiesReviver,
   isUniqueReviver
 ]
 

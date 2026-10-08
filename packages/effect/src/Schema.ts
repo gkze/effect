@@ -9033,6 +9033,161 @@ export function isPropertyNames(keySchema: Constraint, annotations?: Annotations
     }
   )
 }
+const patternPayload = (regExp: globalThis.RegExp) => ({ source: regExp.source, flags: regExp.flags })
+
+const exportablePattern = (regExp: globalThis.RegExp): string | undefined =>
+  /^[dg]*uy?$/.test(regExp.flags) ? regExp.flags.endsWith("y") ? `^(?:${regExp.source})` : regExp.source : undefined
+
+const formatRegExp = (regExp: globalThis.RegExp): string =>
+  regExp.flags === ""
+    ? `new RegExp(${format(regExp.source)})`
+    : `new RegExp(${format(regExp.source)}, ${format(regExp.flags)})`
+
+/**
+ * Validates the values of string properties whose names match a pattern.
+ *
+ * **When to use**
+ *
+ * Use to enforce JSON Schema `patternProperties` without declaring an index
+ * signature, whose TypeScript type would also apply to unmatched keys.
+ *
+ * **Details**
+ *
+ * Every own string key matching `regExp` must have a value satisfying the
+ * encoded side of `valueSchema`. Other keys are not checked. Patterns use the
+ * native regular expression engine and must come from trusted sources.
+ *
+ * JSON Schema:
+ * This check corresponds to one `patternProperties` entry when the pattern
+ * uses the Unicode flag.
+ *
+ * @stability unstable
+ * @category validation
+ * @since 4.0.3
+ */
+export function isPatternProperties(
+  regExp: globalThis.RegExp,
+  valueSchema: Constraint,
+  annotations?: Annotations.Filter
+) {
+  const pattern = new globalThis.RegExp(regExp.source, regExp.flags.replace(/[gy]/g, ""))
+  const value = toEncoded(valueSchema)
+  const parser = SchemaParser._issue(value.ast)
+  const exported = exportablePattern(regExp)
+  return makeFilter<object>(
+    (input, ast, options) => {
+      const issues: Array<SchemaIssue.Issue> = []
+      for (const key of Object.keys(input)) {
+        if (!pattern.test(key)) continue
+        const issue = parser((input as Record<string, unknown>)[key], options)
+        if (issue !== undefined) {
+          issues.push(new SchemaIssue.Pointer([key], issue))
+          if (options.errors === "first") break
+        }
+      }
+      return Arr.isArrayNonEmpty(issues) ? new SchemaIssue.Composite(ast, issues, input, options) : true
+    },
+    {
+      expected: `an object whose properties matching ${pattern} match the schema`,
+      representation: {
+        id: "effect/schema/isPatternProperties",
+        payload: patternPayload(regExp),
+        schemas: [value.ast]
+      },
+      toJsonSchema: ({ schemas, type }) => {
+        if (exported === undefined) return [{}, true]
+        const fragment = { patternProperties: { [exported]: schemas[0] } }
+        return type === "object" ? fragment : [fragment, true]
+      },
+      toCode: ({ schemas }) => ({
+        runtime: `Schema.isPatternProperties(${formatRegExp(regExp)}, ${schemas[0].runtime})`
+      }),
+      [InternalAnnotations.STRUCTURAL_ANNOTATION_KEY]: true,
+      ...annotations
+    }
+  )
+}
+
+/**
+ * Validates the values of string properties that are neither declared nor
+ * matched by a pattern.
+ *
+ * **When to use**
+ *
+ * Use to enforce JSON Schema `additionalProperties` beside declared properties
+ * or `patternProperties`, without an index signature that would also check the
+ * declared or patterned keys.
+ *
+ * **Details**
+ *
+ * Every own string key that is not listed in `properties` and matches none of
+ * `patterns` must have a value satisfying the encoded side of `valueSchema`.
+ * Patterns use the native regular expression engine and must come from trusted
+ * sources.
+ *
+ * JSON Schema:
+ * This check corresponds to `additionalProperties` together with the names of
+ * `properties` and the keys of `patternProperties` in the same schema object.
+ *
+ * @stability unstable
+ * @category validation
+ * @since 4.0.3
+ */
+export function isAdditionalProperties(
+  options: {
+    readonly properties: ReadonlyArray<string>
+    readonly patterns: ReadonlyArray<globalThis.RegExp>
+  },
+  valueSchema: Constraint,
+  annotations?: Annotations.Filter
+) {
+  const names = new Set(options.properties)
+  const patterns = options.patterns.map((regExp) =>
+    new globalThis.RegExp(regExp.source, regExp.flags.replace(/[gy]/g, ""))
+  )
+  const value = toEncoded(valueSchema)
+  const parser = SchemaParser._issue(value.ast)
+  const exported = options.patterns.map(exportablePattern)
+  return makeFilter<object>(
+    (input, ast, parseOptions) => {
+      const issues: Array<SchemaIssue.Issue> = []
+      for (const key of Object.keys(input)) {
+        if (names.has(key) || patterns.some((pattern) => pattern.test(key))) continue
+        const issue = parser((input as Record<string, unknown>)[key], parseOptions)
+        if (issue !== undefined) {
+          issues.push(new SchemaIssue.Pointer([key], issue))
+          if (parseOptions.errors === "first") break
+        }
+      }
+      return Arr.isArrayNonEmpty(issues) ? new SchemaIssue.Composite(ast, issues, input, parseOptions) : true
+    },
+    {
+      expected: "an object whose additional properties match the schema",
+      representation: {
+        id: "effect/schema/isAdditionalProperties",
+        payload: { properties: [...options.properties], patterns: options.patterns.map(patternPayload) },
+        schemas: [value.ast]
+      },
+      toJsonSchema: ({ schemas, type }) => {
+        if (exported.some((pattern) => pattern === undefined)) return [{}, true]
+        const fragment = {
+          properties: Object.fromEntries(options.properties.map((name) => [name, {}])),
+          patternProperties: Object.fromEntries(exported.map((pattern) => [pattern!, {}])),
+          additionalProperties: schemas[0]
+        }
+        return type === "object" ? fragment : [fragment, true]
+      },
+      toCode: ({ schemas }) => ({
+        runtime: `Schema.isAdditionalProperties({ properties: ${format(options.properties)}, patterns: [${
+          options.patterns.map(formatRegExp).join(", ")
+        }] }, ${schemas[0].runtime})`
+      }),
+      [InternalAnnotations.STRUCTURAL_ANNOTATION_KEY]: true,
+      ...annotations
+    }
+  )
+}
+
 /**
  * Validates that all items in an array are unique according to Effect equality.
  *
