@@ -961,7 +961,15 @@ function translateJsonSchemaMultiDocument(
       if (literal !== undefined) representation = intersect(representation, literal, constPath)
     }
     if (Array.isArray(schema.enum)) {
-      const types = schema.enum.map((value, index) => makeJsonLiteral(value, [...path, "enum", index]) ?? unknown)
+      const declaredTypes = Array.isArray(schema.type) ? schema.type : [schema.type]
+      // A structured member excluded by an explicit type can never match, so it
+      // is an impossible branch rather than an unsupported value.
+      const isExcluded = (value: unknown) =>
+        typeof value === "object" && value !== null && declaredTypes.every(isImportedJsonSchemaType) &&
+        !declaredTypes.includes(Array.isArray(value) ? "array" : "object")
+      const types = schema.enum.map((value, index) =>
+        isExcluded(value) ? never : makeJsonLiteral(value, [...path, "enum", index]) ?? unknown
+      )
       representation = intersect(
         representation,
         types.length === 1

@@ -3200,8 +3200,8 @@ export function fromRepresentations(
  *   unsupported keyword. Active `if` / `then` / `else`, `dependentRequired`, and `dependentSchemas` import as
  *   `Schema.isConditional` checks. Inactive conditional keywords and `minContains` / `maxContains` without `contains`
  *   have no validation effect and are ignored.
- * - Objects and arrays used as `const` values or `enum` members are rejected. Only strings, numbers, booleans, and null
- *   are supported.
+ * - Objects and arrays used as `const` values or reachable `enum` members are rejected. Only strings, numbers, booleans,
+ *   and null are supported. Structured `enum` members excluded by an explicit `type` are impossible and are discarded.
  * - Intersections of overlapping unions are limited to disjoint root-type partitions and finite primitive `anyOf`
  *   literal sets. Other union intersections, including cases that would duplicate a nested choice, are rejected.
  * - Unknown extension keywords are ignored and their semantics are not enforced.
@@ -3247,8 +3247,8 @@ export function fromJsonSchemaDocument(
  * - Only definitions reachable from a root are translated.
  * - Unsupported standard validation and applicator keywords are rejected with an error identifying the keyword. Unknown
  *   extension keywords are ignored and their semantics are not enforced.
- * - Objects and arrays used as `const` values or `enum` members are rejected. Only strings, numbers, booleans, and null
- *   are supported.
+ * - Objects and arrays used as `const` values or reachable `enum` members are rejected. Only strings, numbers, booleans,
+ *   and null are supported. Structured `enum` members excluded by an explicit `type` are impossible and are discarded.
  * - Intersections of overlapping unions are limited to disjoint root-type partitions and finite primitive `anyOf`
  *   literal sets. Other union intersections, including cases that would duplicate a nested choice, are rejected.
  * - Only direct local references to top-level definitions in the form `#/$defs/<escaped-token>` are supported. Root

@@ -6394,7 +6394,7 @@ are rejected with an error identifying the unsupported keyword. Active `if` / `t
 dependency only when its trigger property is present, without changing the generated type. Inactive conditional keywords and `minContains` / `maxContains` without
 `contains` have no validation effect and are ignored. Unknown extension keywords are ignored and their semantics are not
 enforced. Objects and arrays used as `const` values or `enum` members are rejected. Only strings, numbers, booleans, and
-null are supported. The optional `onEnter` callback can normalize each JSON Schema node
+null are supported. Structured `enum` members excluded by an explicit `type` can never match and are discarded. The optional `onEnter` callback can normalize each JSON Schema node
 before it is translated.
 
 Intersections of overlapping unions are limited to disjoint root-type partitions and finite primitive `anyOf` literal
