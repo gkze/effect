@@ -597,9 +597,39 @@ describe("SchemaRepresentation.toCodeDocument annotations", () => {
     })
 
     assert.deepStrictEqual(output.references, {
-      nonRecursives: [{ $ref: "B", code: { runtime: "A", Type: "A" } }],
+      nonRecursives: [{ $ref: "B", code: { runtime: "Schema.suspend((): Schema.Codec<A> => A)", Type: "A" } }],
       recursives: { A: { runtime: "Schema.suspend((): Schema.Codec<A> => A)", Type: "A" } }
     })
+  })
+
+  it("emits evaluable definitions when recursive and non-recursive definitions depend on each other", () => {
+    const output = SchemaRepresentation.toCodeDocument({
+      representations: [{ _tag: "Reference", $ref: "Uses" }],
+      references: {
+        Leaf: { _tag: "String", checks: [] },
+        Tree: {
+          _tag: "Union",
+          types: [
+            { _tag: "Reference", $ref: "Leaf" },
+            { _tag: "Arrays", elements: [], rest: [{ _tag: "Reference", $ref: "Tree" }], checks: [] }
+          ],
+          checks: []
+        },
+        Uses: { _tag: "Arrays", elements: [], rest: [{ _tag: "Reference", $ref: "Tree" }], checks: [] }
+      }
+    })
+    // Emit non-recursive definitions in order, then recursive ones, then the roots.
+    const javascript = (runtime: string) => runtime.replace(/\(\): Schema\.Codec<\w+> =>/g, "() =>")
+    const body = [
+      ...output.references.nonRecursives.map(({ $ref, code }) => `const ${$ref} = ${javascript(code.runtime)};`),
+      ...Object.entries(output.references.recursives).map(([$ref, code]) =>
+        `const ${$ref} = ${javascript(code.runtime)};`
+      ),
+      `return ${javascript(output.codes[0].runtime)}`
+    ].join("\n")
+    const schema = new Function("Schema", body)(Schema) as Schema.Codec<unknown>
+    assert.isTrue(Schema.is(schema)(["a", ["b", []]]))
+    assert.isFalse(Schema.is(schema)([1]))
   })
 
   it("reports missing references with their document path", () => {
