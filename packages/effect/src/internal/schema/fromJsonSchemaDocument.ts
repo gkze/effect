@@ -71,6 +71,7 @@ interface ImportedObjects extends ImportedKeyword<"Objects"> {
   readonly indexSignatures: ReadonlyArray<ImportedIndexSignature>
   readonly scopes: ReadonlyArray<ImportedObjectScope>
   readonly path: Path
+  readonly scopeChecks: ReadonlyArray<Check>
 }
 
 interface ImportedUnion extends ImportedKeyword<"Union"> {
@@ -111,6 +112,16 @@ interface ImportedObjectScope {
   readonly additionalProperties: ImportedJsonSchemaRepresentation
 }
 
+/**
+ * An open scope with patterns, or with typed `additionalProperties` beside
+ * declared properties. Its patterned and additional values are enforced by
+ * checks: TypeScript index signatures would apply them to every key.
+ */
+function hasValueChecks(scope: ImportedObjectScope): boolean {
+  return scope.additionalProperties._tag !== "Never" &&
+    (scope.patterns.length > 0 || scope.additionalProperties._tag !== "Unknown" && scope.hasProperties)
+}
+
 const never: ImportedJsonSchemaRepresentation = { _tag: "Never", checks: [] }
 const unknown: ImportedJsonSchemaRepresentation = { _tag: "Unknown", checks: [] }
 const string: ImportedJsonSchemaRepresentation = { _tag: "String", checks: [] }
@@ -121,7 +132,8 @@ const typeShapeIgnoredKeys = new Set([
   "annotations",
   "customAnnotations",
   "path",
-  "scopes"
+  "scopes",
+  "scopeChecks"
 ])
 
 function isObject(input: unknown): input is Record<string, unknown> {
@@ -318,18 +330,7 @@ function translateJsonSchemaMultiDocument(
           rest: representation.rest.map(finalize)
         }
       case "Objects": {
-        // Intersections may reduce open patterns to fixed properties, so reject only
-        // if an open pattern remains in the final representation.
-        const { scopes, path, ...object } = representation
-        if (
-          representation.indexSignatures[0]?.parameter === string &&
-          scopes.some((scope) => scope.patterns.length > 0)
-        ) {
-          throw errorWithPath(
-            "Cannot import open \"patternProperties\": unmatched keys cannot be typed correctly.",
-            path
-          )
-        }
+        const { scopes: _scopes, path: _path, scopeChecks, ...object } = representation
         return {
           ...object,
           propertySignatures: representation.propertySignatures.map((property) => ({
@@ -339,7 +340,8 @@ function translateJsonSchemaMultiDocument(
           indexSignatures: representation.indexSignatures.map((indexSignature) => ({
             parameter: finalize(indexSignature.parameter),
             type: finalize(indexSignature.type)
-          }))
+          })),
+          checks: [...object.checks, ...scopeChecks.map(finalizeCheck)]
         }
       }
       case "Union":
@@ -579,6 +581,28 @@ function translateJsonSchemaMultiDocument(
     return out
   }
 
+  function patternPayload(pattern: ImportedObjectPattern): Schema.Json {
+    // A pattern parameter carries exactly the isPattern filter from importPatternCheck.
+    return (pattern.parameter.checks[0] as Filter).representation.payload
+  }
+
+  /** Enforces one scope's patterned and additional values outside its index signature. */
+  function additionalPropertiesChecks(scope: ImportedObjectScope): Array<Check> {
+    return [
+      ...scope.patterns.map((pattern) =>
+        jsonSchemaFilter("effect/schema/isPatternProperties", patternPayload(pattern), [pattern.type])
+      ),
+      ...(scope.additionalProperties._tag === "Unknown" ? [] : [
+        jsonSchemaFilter("effect/schema/isAdditionalProperties", {
+          properties: Array.from(scope.properties).flatMap(([name, property]) =>
+            property.type === undefined ? [] : [name]
+          ),
+          patterns: scope.patterns.map(patternPayload)
+        }, [scope.additionalProperties])
+      ])
+    ]
+  }
+
   /**
    * Identifies the generated TypeScript type, which ignores checks,
    * annotations, and import metadata such as source paths and object scopes.
@@ -598,8 +622,7 @@ function translateJsonSchemaMultiDocument(
     for (const scope of scopes) {
       for (const name of scope.properties.keys()) names.add(name)
       hasFiniteKeyDomain ||= scope.additionalProperties._tag === "Never" && scope.patterns.length === 0
-      requiresFiniteKeyDomain ||= scope.additionalProperties._tag === "Never" ||
-        scope.additionalProperties._tag !== "Unknown" && (scope.hasProperties || scope.patterns.length > 0)
+      requiresFiniteKeyDomain ||= scope.additionalProperties._tag === "Never" && scope.patterns.length > 0
     }
     const closedPatterns = scopes.length === 1 && scopes[0].additionalProperties._tag === "Never" &&
         scopes[0].patterns.length > 0
@@ -607,9 +630,7 @@ function translateJsonSchemaMultiDocument(
       : undefined
     if (!hasFiniteKeyDomain && requiresFiniteKeyDomain && closedPatterns === undefined) {
       throw errorWithPath(
-        scopes.some((scope) => scope.additionalProperties._tag === "Never")
-          ? "Cannot import this closed patterned object: patterns from multiple object schemas are not supported."
-          : "Cannot combine typed \"additionalProperties\" with other property schemas: Effect index signatures also check excluded keys.",
+        "Cannot import this closed patterned object: patterns from multiple object schemas are not supported.",
         path
       )
     }
@@ -657,7 +678,7 @@ function translateJsonSchemaMultiDocument(
       ? [{
         parameter: string,
         type: intersectAll(
-          scopes.map((scope) => scope.additionalProperties),
+          scopes.map((scope) => hasValueChecks(scope) ? unknown : scope.additionalProperties),
           [...path, "additionalProperties"]
         )
       }]
@@ -670,6 +691,10 @@ function translateJsonSchemaMultiDocument(
       indexSignatures,
       scopes,
       path,
+      // Checks derived from object scopes are added once, after intersections.
+      scopeChecks: !hasFiniteKeyDomain && closedPatterns === undefined
+        ? scopes.filter(hasValueChecks).flatMap(additionalPropertiesChecks)
+        : [],
       ...checked
     }
   }
@@ -730,7 +755,10 @@ function translateJsonSchemaMultiDocument(
             hasChoices(indexSignature.parameter) ||
             hasChoices(indexSignature.type)
           ) ||
-          representation.scopes.some((scope) => scope.patterns.some((pattern) => hasChoices(pattern.type))) ||
+          representation.scopes.some((scope) =>
+            scope.patterns.some((pattern) => hasChoices(pattern.type)) ||
+            hasValueChecks(scope) && hasChoices(scope.additionalProperties)
+          ) ||
           representation.checks.some(checkHasChoices)
       default:
         return false

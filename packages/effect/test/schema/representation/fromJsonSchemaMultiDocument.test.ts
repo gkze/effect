@@ -1,5 +1,5 @@
 import { assert } from "@effect/vitest"
-import { type Schema, type SchemaAST, SchemaRepresentation } from "effect"
+import { Schema, type SchemaAST, SchemaRepresentation } from "effect"
 import { TestSchema } from "effect/testing"
 import { describe, it } from "vitest"
 import { deepStrictEqual, throws } from "../../utils/assert.ts"
@@ -26,26 +26,16 @@ function assertCode(schemas: readonly [Schema.Top, ...Array<Schema.Top>], expect
 }
 
 describe("SchemaRepresentation.fromJsonSchemaMultiDocument", () => {
-  it("rejects open pattern scopes in roots and shared definitions", () => {
+  it("checks open pattern scopes in roots and shared definitions", () => {
     const open = { type: "object", patternProperties: { "^a": { type: "number" } } } as const
-    throws(
-      () =>
-        SchemaRepresentation.fromJsonSchemaMultiDocument({
-          dialect: "draft-2020-12",
-          schemas: [{ type: "string" }, { type: "array", items: open }],
-          definitions: {}
-        }, { patterns: "apply" }),
-      `Cannot import open "patternProperties": unmatched keys cannot be typed correctly.\n  at ["schemas"][1]["items"]`
-    )
-    throws(
-      () =>
-        SchemaRepresentation.fromJsonSchemaMultiDocument({
-          dialect: "draft-2020-12",
-          schemas: [{ $ref: "#/$defs/Values" }, { type: "array", items: { $ref: "#/$defs/Values" } }],
-          definitions: { Values: open }
-        }, { patterns: "apply" }),
-      `Cannot import open "patternProperties": unmatched keys cannot be typed correctly.\n  at ["definitions"]["Values"]`
-    )
+    const [, values] = SchemaRepresentation.fromJsonSchemaMultiDocument({
+      dialect: "draft-2020-12",
+      schemas: [{ $ref: "#/$defs/Values" }, { type: "array", items: { $ref: "#/$defs/Values" } }],
+      definitions: { Values: open }
+    }, { patterns: "apply" })
+    const is = Schema.is(values)
+    assert.isTrue(is([{ a: 1, b: "x" }]))
+    assert.isFalse(is([{ a: "x" }]))
   })
 
   it("imports closed patterned Records through shared definitions", async () => {

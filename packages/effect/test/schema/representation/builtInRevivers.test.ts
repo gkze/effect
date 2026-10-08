@@ -776,6 +776,32 @@ describe("SchemaRepresentation built-in object revivers", () => {
     })
   })
 
+  it("revives isPatternProperties", () => {
+    const value = Schema.Number
+    assertFilterReviver({
+      schema: Schema.Any.check(Schema.isPatternProperties(/^a/u, value)),
+      id: "effect/schema/isPatternProperties",
+      payload: { source: "^a", flags: "u" },
+      schemas: [value.ast],
+      reviver: SchemaRepresentation.isPatternPropertiesReviver,
+      valid: { a: 1, b: "x" },
+      invalid: { a: "x" }
+    })
+  })
+
+  it("revives isAdditionalProperties", () => {
+    const value = Schema.Boolean
+    assertFilterReviver({
+      schema: Schema.Any.check(Schema.isAdditionalProperties({ properties: ["a"], patterns: [/^b/u] }, value)),
+      id: "effect/schema/isAdditionalProperties",
+      payload: { properties: ["a"], patterns: [{ source: "^b", flags: "u" }] },
+      schemas: [value.ast],
+      reviver: SchemaRepresentation.isAdditionalPropertiesReviver,
+      valid: { a: "x", b: "y", c: true },
+      invalid: { a: "x", c: "y" }
+    })
+  })
+
   it("persists the encoded key schema for isPropertyNames", () => {
     const names = Schema.String.check(Schema.isPattern(/^[A-Z]/))
     const check = Schema.isPropertyNames(names)
