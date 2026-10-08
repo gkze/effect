@@ -802,6 +802,22 @@ describe("SchemaRepresentation built-in object revivers", () => {
     })
   })
 
+  it("revives isConditional", () => {
+    const condition = Schema.String
+    const onTrue = Schema.String.check(Schema.isMinLength(2))
+    const onFalse = Schema.Number
+    assertFilterReviver({
+      schema: Schema.Any.check(Schema.isConditional(condition, onTrue, onFalse)),
+      id: "effect/schema/isConditional",
+      payload: null,
+      schemas: [condition.ast, onTrue.ast, onFalse.ast],
+      reviver: SchemaRepresentation.isConditionalReviver,
+      dependencies: [SchemaRepresentation.isMinLengthReviver],
+      valid: "ab",
+      invalid: "a"
+    })
+  })
+
   it("persists the encoded key schema for isPropertyNames", () => {
     const names = Schema.String.check(Schema.isPattern(/^[A-Z]/))
     const check = Schema.isPropertyNames(names)
